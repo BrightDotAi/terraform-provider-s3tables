@@ -83,7 +83,7 @@ func loadAWSConfig(ctx context.Context, data BrightAIProviderModel) (aws.Config,
 		opts = append(opts, awsconfig.WithSharedConfigProfile(data.Profile.ValueString()))
 	}
 
-	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(), opts...)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		diags.AddError("Failed to load AWS configuration", err.Error())
 		return aws.Config{}, diags

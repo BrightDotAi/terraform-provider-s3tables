@@ -52,14 +52,14 @@ func TestBuildSchema(t *testing.T) {
 			Name:     types.StringValue("id"),
 			Type:     types.StringValue("long"),
 			Required: types.BoolValue(true),
-			Default:  types.DynamicNull(),
+			Default:  types.StringNull(),
 			Doc:      types.StringValue("primary key"),
 		},
 		{
 			Name:     types.StringValue("value"),
 			Type:     types.StringValue("string"),
 			Required: types.BoolValue(false),
-			Default:  types.DynamicNull(),
+			Default:  types.StringNull(),
 			Doc:      types.StringValue(""),
 		},
 	}
@@ -98,7 +98,7 @@ func TestBuildSchema_InvalidType(t *testing.T) {
 			Name:     types.StringValue("x"),
 			Type:     types.StringValue("notatype"),
 			Required: types.BoolValue(false),
-			Default:  types.DynamicNull(),
+			Default:  types.StringNull(),
 			Doc:      types.StringValue(""),
 		},
 	}
@@ -113,7 +113,7 @@ func TestFieldDefaultValues(t *testing.T) {
 			Name:     types.StringValue("score"),
 			Type:     types.StringValue("double"),
 			Required: types.BoolValue(false), // schema default
-			Default:  types.DynamicValue(types.Float64Value(0.0)),
+			Default:  types.StringValue("0"),
 			Doc:      types.StringValue(""), // schema default
 		},
 	}
@@ -131,6 +131,44 @@ func TestFieldDefaultValues(t *testing.T) {
 	}
 	if f.WriteDefault == nil {
 		t.Error("WriteDefault should be set from the default value")
+	}
+}
+
+func TestToNestedField(t *testing.T) {
+	tests := []struct {
+		name        string
+		fieldType   string
+		defaultVal  types.String
+		wantDefault any
+	}{
+		{"omitted_default", "long", types.StringNull(), nil},
+		{"boolean", "boolean", types.StringValue("true"), true},
+		{"int", "int", types.StringValue("7"), int32(7)},
+		{"long", "long", types.StringValue("42"), int64(42)},
+		{"float", "float", types.StringValue("2.5"), float32(2.5)},
+		{"double", "double", types.StringValue("3.14"), float64(3.14)},
+		{"string", "string", types.StringValue("hello"), "hello"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := FieldModel{
+				Name:     types.StringValue("col"),
+				Type:     types.StringValue(tt.fieldType),
+				Required: types.BoolValue(false),
+				Default:  tt.defaultVal,
+				Doc:      types.StringValue(""),
+			}
+			nf, err := f.toNestedField(0)
+			if err != nil {
+				t.Fatalf("toNestedField() unexpected error: %v", err)
+			}
+			if nf.WriteDefault != tt.wantDefault {
+				t.Errorf("WriteDefault = %v (%T), want %v (%T)", nf.WriteDefault, nf.WriteDefault, tt.wantDefault, tt.wantDefault)
+			}
+			if nf.InitialDefault != tt.wantDefault {
+				t.Errorf("InitialDefault = %v (%T), want %v (%T)", nf.InitialDefault, nf.InitialDefault, tt.wantDefault, tt.wantDefault)
+			}
+		})
 	}
 }
 
@@ -154,7 +192,7 @@ func TestBuildProperties(t *testing.T) {
 
 func TestBuildPartitionSpec_Unpartitioned(t *testing.T) {
 	s, _ := BuildSchema([]FieldModel{
-		{Name: types.StringValue("ts"), Type: types.StringValue("timestamp"), Required: types.BoolValue(false), Default: types.DynamicNull(), Doc: types.StringValue("")},
+		{Name: types.StringValue("ts"), Type: types.StringValue("timestamp"), Required: types.BoolValue(false), Default: types.StringNull(), Doc: types.StringValue("")},
 	})
 	spec, err := BuildPartitionSpec(nil, s)
 	if err != nil {
@@ -162,100 +200,6 @@ func TestBuildPartitionSpec_Unpartitioned(t *testing.T) {
 	}
 	if spec.NumFields() != 0 {
 		t.Errorf("expected unpartitioned spec, got %d fields", spec.NumFields())
-	}
-}
-
-// ── conversion tests ─────────────────────────────────────────────────────────
-
-func TestDynamicValueToIcebergLit(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   types.Dynamic
-		want    iceberg.Literal
-		wantErr bool
-	}{
-		{"null", types.DynamicNull(), nil, false},
-		{"bool_true", types.DynamicValue(types.BoolValue(true)), iceberg.BoolLiteral(true), false},
-		{"bool_false", types.DynamicValue(types.BoolValue(false)), iceberg.BoolLiteral(false), false},
-		{"float64", types.DynamicValue(types.Float64Value(3.14)), iceberg.Float64Literal(3.14), false},
-		{"float32", types.DynamicValue(types.Float32Value(2.5)), iceberg.Float32Literal(2.5), false},
-		{"int64", types.DynamicValue(types.Int64Value(42)), iceberg.Int64Literal(42), false},
-		{"int32", types.DynamicValue(types.Int32Value(7)), iceberg.Int32Literal(7), false},
-		{"string", types.DynamicValue(types.StringValue("hello")), iceberg.StringLiteral("hello"), false},
-		{"unknown_unsupported", types.DynamicUnknown(), nil, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := dynamicValueToIcebergLit(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("dynamicValueToIcebergLit() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("dynamicValueToIcebergLit() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDynamicValueToAny(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   types.Dynamic
-		want    any
-		wantErr bool
-	}{
-		{"null", types.DynamicNull(), nil, false},
-		{"bool", types.DynamicValue(types.BoolValue(true)), true, false},
-		{"float64", types.DynamicValue(types.Float64Value(3.14)), float64(3.14), false},
-		{"float32", types.DynamicValue(types.Float32Value(2.5)), float32(2.5), false},
-		{"int64", types.DynamicValue(types.Int64Value(42)), int64(42), false},
-		{"int32", types.DynamicValue(types.Int32Value(7)), int32(7), false},
-		{"string", types.DynamicValue(types.StringValue("hello")), "hello", false},
-		{"unknown_unsupported", types.DynamicUnknown(), nil, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := dynamicValueToAny(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("dynamicValueToAny() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && got != tt.want {
-				t.Errorf("dynamicValueToAny() = %v (%T), want %v (%T)", got, got, tt.want, tt.want)
-			}
-		})
-	}
-}
-
-func TestAnyToDynamicValue(t *testing.T) {
-	tests := []struct {
-		name    string
-		typ     string
-		val     any
-		want    types.Dynamic
-		wantErr bool
-	}{
-		{"nil_value", "boolean", nil, types.DynamicNull(), false},
-		{"boolean", "boolean", true, types.DynamicValue(types.BoolValue(true)), false},
-		{"int", "int", int32(7), types.DynamicValue(types.Int32Value(7)), false},
-		{"long", "long", int64(42), types.DynamicValue(types.Int64Value(42)), false},
-		{"float", "float", float32(2.5), types.DynamicValue(types.Float32Value(2.5)), false},
-		{"double", "double", float64(3.14), types.DynamicValue(types.Float64Value(3.14)), false},
-		{"string", "string", "hello", types.DynamicValue(types.StringValue("hello")), false},
-		{"unsupported_type", "timestamp", "2021-01-01", types.DynamicNull(), true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := anyToDynamicValue(tt.typ, tt.val)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("anyToDynamicValue() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && !got.Equal(tt.want) {
-				t.Errorf("anyToDynamicValue() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -339,7 +283,7 @@ func TestApplySchemaChanges(t *testing.T) {
 			Name:     types.StringValue(name),
 			Type:     types.StringValue(typ),
 			Required: types.BoolValue(required),
-			Default:  types.DynamicNull(),
+			Default:  types.StringNull(),
 			Doc:      types.StringValue(""),
 		}
 	}
@@ -384,8 +328,8 @@ func TestApplySchemaChanges(t *testing.T) {
 	})
 
 	t.Run("update_column", func(t *testing.T) {
-		state := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(false), Default: types.DynamicNull(), Doc: types.StringValue("")}
-		plan := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(true), Default: types.DynamicNull(), Doc: types.StringValue("pk")}
+		state := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(false), Default: types.StringNull(), Doc: types.StringValue("")}
+		plan := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(true), Default: types.StringNull(), Doc: types.StringValue("pk")}
 		mock := &mockSchemaUpdater{}
 		txn := &mockTransaction{schema: mock}
 		if err := ApplySchemaChanges(txn, []FieldModel{state}, []FieldModel{plan}); err != nil {
@@ -620,7 +564,7 @@ resource "brightai_s3_table" "test" {
   field {
     name    = "score"
     type    = "double"
-    default = 0.0
+    default = "0.0"
   }
 
   property {

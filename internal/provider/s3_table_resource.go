@@ -15,7 +15,6 @@ import (
 	"github.com/apache/iceberg-go/catalog/rest"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -55,7 +54,7 @@ type FieldModel struct {
 	Name     types.String `tfsdk:"name"`
 	Type     types.String `tfsdk:"type"`
 	Required types.Bool   `tfsdk:"required"`
-	Default  types.Dynamic `tfsdk:"default"`
+	Default  types.String `tfsdk:"default"`
 	Doc      types.String `tfsdk:"doc"`
 }
 
@@ -128,8 +127,8 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							Computed:            true,
 							Default:             booldefault.StaticBool(false),
 						},
-						"default": schema.DynamicAttribute{
-							MarkdownDescription: "Default value for column",
+						"default": schema.StringAttribute{
+							MarkdownDescription: "Default value for column. Int or float values will be parsed from string",
 							Optional:            true,
 							Computed:            true,
 						},
@@ -410,7 +409,7 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 	if err != nil {
 		return nil, fmt.Errorf("field %q: %w", f.Name.ValueString(), err)
 	}
-	dv, err := dynamicValueToAny(f.Default)
+	dv, err := f.getFieldDefault()
 	if err != nil {
 		return nil, err
 	}
@@ -426,102 +425,103 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 	return &nestedField, nil
 }
 
+func (f *FieldModel) getFieldDefault() (any, error) {
+	if f.Default.IsNull() || f.Default.IsUnknown() {
+		return nil, nil
+	}
+	ds := f.Default.ValueString()
+
+	switch typ := f.Type.ValueString(); typ {
+	case "boolean":
+		switch ds {
+		case "true", "True":
+			return true, nil
+		case "false", "False":
+			return false, nil
+		default:
+			return nil, fmt.Errorf("Could not parse default to boolean: %s", ds)
+		}
+	case "int", "long":
+		i, err := strconv.ParseInt(ds, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		if typ == "long" {
+			return i, nil
+		} else {
+			return int32(i), nil
+		}
+	case "float", "double":
+		f, err := strconv.ParseFloat(ds, 64)
+		if err != nil {
+			return nil, err
+		}
+		if typ == "double" {
+			return f, nil
+		} else {
+			return float32(f), nil
+		}
+	case "string":
+		return ds, nil
+	default :
+		return nil, fmt.Errorf("Unsupported default type: %s", typ)
+	}
+}
+
 
 // Dynamic Values - for default value fields
 
-func dynamicValueToIcebergLit(d types.Dynamic) (iceberg.Literal, error) {
-	if d.IsNull() {
+func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
+	if d == nil {
 		// option not specified
 		return nil, nil
 	}
-	switch value := d.UnderlyingValue().(type) {
-    case types.Bool:
-		return iceberg.BoolLiteral(value.ValueBool()), nil
-	case types.Float64:
-		return iceberg.Float64Literal(value.ValueFloat64()), nil
-	case types.Float32:
-		return iceberg.Float32Literal(value.ValueFloat32()), nil
-	case types.Int64:
-		return iceberg.Int64Literal(value.ValueInt64()), nil
-	case types.Int32:
-		return iceberg.Int32Literal(value.ValueInt32()), nil
-    case types.String:
-		return iceberg.StringLiteral(value.ValueString()), nil
-	default:
-		return nil, fmt.Errorf("Unsupported default value type: %v", value)
-	}
-}
-
-func dynamicValueToAny(d types.Dynamic) (any, error) {
-	if d.IsNull() {
-		// option not specified
-		return nil, nil
-	}
-	switch value := d.UnderlyingValue().(type) {
-    case types.Bool:
-		return value.ValueBool(), nil
-	case types.Float64:
-		return value.ValueFloat64(), nil
-	case types.Float32:
-		return value.ValueFloat32(), nil
-	case types.Int64:
-		return value.ValueInt64(), nil
-	case types.Int32:
-		return value.ValueInt32(), nil
-    case types.String:
-		return value.ValueString(), nil
-	default:
-		return nil, fmt.Errorf("Unsupported default value type: %v", value)
-	}
-}
-
-
-func anyToDynamicValue(typ string, val any) (types.Dynamic, error) {
-	if val == nil {
-		return types.DynamicNull(), nil
-	}
-	var tv attr.Value
 	switch typ {
 	case "boolean":
-		b, ok := val.(bool)
+		b, ok := d.(bool)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type boolean", val)
+			return nil, fmt.Errorf("Non-boolean value %v", d)
+		} else {
+			return iceberg.BoolLiteral(b), nil
 		}
-		tv = types.BoolValue(b)
 	case "int":
-		i32, ok := val.(int32)
+		i32, ok := d.(int32)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type int", val)
+			return nil, fmt.Errorf("Non-integer value %v", d)
+		} else {
+			return iceberg.Int32Literal(i32), nil
 		}
-		tv = types.Int32Value(i32)
 	case "long":
-		i64, ok := val.(int64)
+		i64, ok := d.(int64)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type long", val)
+			return nil, fmt.Errorf("Non-integer value %v", d)
+		} else {
+			return iceberg.Int64Literal(i64), nil
 		}
-		tv = types.Int64Value(i64)
 	case "float":
-		f32, ok := val.(float32)
+		f32, ok := d.(float32)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
+			return nil, fmt.Errorf("Non-float value %v", d)
+		} else {
+			return iceberg.Float32Literal(f32), nil
 		}
-		tv = types.Float32Value(f32)
 	case "double":
-		f64, ok := val.(float64)
+		f64, ok := d.(float64)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type double", val)
+			return nil, fmt.Errorf("Non-float value %v", d)
+		} else {
+			return iceberg.Float64Literal(f64), nil
 		}
-		tv = types.Float64Value(f64)
 	case "string":
-		s, ok := val.(string)
+		s, ok := d.(string)
 		if !ok {
-			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type string", val)
+			return nil, fmt.Errorf("Non-string value %v", d)
+		} else {
+			return iceberg.StringLiteral(s), nil
 		}
-		tv = types.StringValue(s)
 	default:
-		return types.DynamicNull(), fmt.Errorf("Unsupported default value %v", val)
+		return nil, fmt.Errorf("Unsupported default value type: %v", d)
 	}
-	return types.DynamicValue(tv), nil
 }
 
 // Retrieving state
@@ -593,7 +593,7 @@ func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	fields := schema.Fields()
 	models := make([]FieldModel, 0, len(fields))
 	for _, f := range fields {
-		dv, err := anyToDynamicValue(f.Type.String(), f.WriteDefault)
+		dv, err := anyToStringValue(f.Type.String(), f.WriteDefault)
 		if 	err != nil {
 			return nil, err
 		}
@@ -607,6 +607,62 @@ func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	}
 	return models, nil
 }
+
+// Convert a default value to Terraform String Value
+func anyToStringValue(typ string, val any) (types.String, error) {
+	if val == nil {
+		return types.StringNull(), nil
+	}
+	switch typ {
+	case "boolean":
+		b, ok := val.(bool)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type boolean", val)
+		} else if b {
+			return types.StringValue("true"), nil
+		} else {
+			return types.StringValue("false"), nil
+		}
+	case "int":
+		i32, ok := val.(int32)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type int", val)
+		} else {
+			return types.StringValue(strconv.Itoa(int(i32))), nil
+		}
+	case "long":
+		i64, ok := val.(int64)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type long", val)
+		} else {
+			return types.StringValue(strconv.FormatInt(i64, 10)), nil
+		}
+	case "float":
+		f32, ok := val.(float32)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
+		} else {
+			return types.StringValue(strconv.FormatFloat(float64(f32), 'f', -1, 32)), nil
+		}
+	case "double":
+		f64, ok := val.(float64)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
+		} else {
+			return types.StringValue(strconv.FormatFloat(f64, 'f', -1, 64)), nil
+		}
+	case "string":
+		s, ok := val.(string)
+		if !ok {
+			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type string", val)
+		} else {
+			return types.StringValue(s), nil
+		}
+	default:
+		return types.StringNull(), fmt.Errorf("Unsupported default value %v", val)
+	}
+}
+
 // specToPartitionModels maps an Iceberg PartitionSpec back to Terraform partition models.
 func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) []PartitionModel {
 	var models []PartitionModel
@@ -731,18 +787,22 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 			if err != nil {
 				return fmt.Errorf("field %q: %w", name, err)
 			}
-			dv, err := dynamicValueToIcebergLit(pf.Default)
+			dv, err := pf.getFieldDefault()
+			if err != nil {
+				return fmt.Errorf("field %q: %w", name, err)
+			}
+			dvlit, err := anyToIcebergLit(pf.Type.ValueString(), dv)
 			if err != nil {
 				return fmt.Errorf("field %q: %w", name, err)
 			}
 			if !exists {
-				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dv)
+				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
 			} else {
 				updater.UpdateColumn([]string{name}, itable.ColumnUpdate{
 					FieldType: iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},
 					Doc: iceberg.Optional[string]{Valid: true, Val: pf.Doc.ValueString()},
 					Required: iceberg.Optional[bool]{Valid: true, Val: pf.Required.ValueBool()},
-					WriteDefault: iceberg.Optional[iceberg.Literal]{Valid: true, Val: dv},
+					WriteDefault: iceberg.Optional[iceberg.Literal]{Valid: true, Val: dvlit},
 			})
 			}
 		}
