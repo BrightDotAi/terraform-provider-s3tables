@@ -2,7 +2,7 @@
 
 Terraform provider for managing AWS S3 Tables Iceberg resources via the Glue catalog.
 
-Registry address: `registry.terraform.io/anthonykosky/terraform-provider-test`
+Registry address: `registry.terraform.io/BrightDotAi/brightai-s3tables`
 
 ## Requirements
 
@@ -16,7 +16,7 @@ Registry address: `registry.terraform.io/anthonykosky/terraform-provider-test`
 terraform {
   required_providers {
     brightai = {
-      source  = "anthonykosky/terraform-provider-test"
+      source  = "BrightDotAi/brightai-s3tables"
       version = "~> 0.1"
     }
   }
@@ -43,13 +43,16 @@ Manages an [Apache Iceberg](https://iceberg.apache.org/) table in an S3 Tables b
 
 Schema columns and partition fields can be added or removed without destroying and recreating the table. Renaming a column or changing its type requires removing the old column and adding a new one (in-place rename/retype is not supported by the Iceberg spec).
 
+> **Note:** Table properties cannot be updated after creation. To change properties, destroy and recreate the resource.
+
 #### Example — Basic table
 
 ```hcl
 resource "brightai_s3_table" "events" {
-  table_bucket_arn = "arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket"
-  namespace        = "analytics"
-  name             = "events"
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "analytics"
+  name      = "events"
 
   field {
     name     = "event_id"
@@ -69,8 +72,9 @@ resource "brightai_s3_table" "events" {
   }
 
   field {
-    name = "payload"
-    type = "string"
+    name    = "payload"
+    type    = "string"
+    default = ""
   }
 }
 ```
@@ -79,9 +83,10 @@ resource "brightai_s3_table" "events" {
 
 ```hcl
 resource "brightai_s3_table" "events_partitioned" {
-  table_bucket_arn = "arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket"
-  namespace        = "analytics"
-  name             = "events_partitioned"
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "analytics"
+  name      = "events_partitioned"
 
   field {
     name     = "event_id"
@@ -135,9 +140,10 @@ resource "brightai_s3_table" "events_partitioned" {
 
 ```hcl
 resource "brightai_s3_table" "metrics" {
-  table_bucket_arn = "arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket"
-  namespace        = "monitoring"
-  name             = "metrics"
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "monitoring"
+  name      = "metrics"
 
   field {
     name     = "metric_id"
@@ -183,13 +189,41 @@ resource "brightai_s3_table" "metrics" {
 }
 ```
 
+#### Example — Table with properties
+
+```hcl
+resource "brightai_s3_table" "events" {
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "analytics"
+  name      = "events"
+
+  field {
+    name     = "event_id"
+    type     = "string"
+    required = true
+  }
+
+  property {
+    name  = "write.metadata.compression-codec"
+    value = "gzip"
+  }
+
+  property {
+    name  = "write.target-file-size-bytes"
+    value = "134217728"
+  }
+}
+```
+
 #### Argument Reference
 
 **Top-level arguments:**
 
 | Argument | Type | Required | Forces New Resource | Description |
 |----------|------|----------|---------------------|-------------|
-| `table_bucket_arn` | string | Yes | Yes | ARN of the S3 table bucket (`arn:aws:s3tables:{region}:{account}:bucket/{name}`). |
+| `warehouse` | string | Yes | Yes | Warehouse identifier: `{account}:s3tablescatalog/{bucket-name}`. |
+| `region` | string | Yes | Yes | AWS region where the table bucket resides (e.g. `us-east-1`). |
 | `namespace` | string | Yes | Yes | Glue database name (namespace) that contains the table. |
 | `name` | string | Yes | Yes | Name of the table. |
 
@@ -200,6 +234,7 @@ resource "brightai_s3_table" "metrics" {
 | `name` | string | Yes | Column name. |
 | `type` | string | Yes | Iceberg column type (see [Supported Types](#supported-types)). |
 | `required` | bool | No | Whether the column is non-nullable. Defaults to `false`. |
+| `default` | dynamic | No | Default value written for new rows and backfilled for existing rows when the column is added. Supported for `boolean`, `int`, `long`, `float`, `double`, and `string` columns. |
 | `doc` | string | No | Documentation string for the column. Defaults to `""`. |
 
 **`partition` block** (list — partition fields can be added or removed without recreating the table):
@@ -210,14 +245,14 @@ resource "brightai_s3_table" "metrics" {
 | `transform` | string | Yes | Partition transform (see [Partition Transforms](#partition-transforms)). |
 | `name` | string | Yes | Name for this partition field. |
 
-#### Attribute Reference
+**`property` block** (list — Iceberg table properties set at creation time):
 
-In addition to the arguments above, the following attributes are exported:
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `name` | string | Yes | Property key (e.g. `write.metadata.compression-codec`). |
+| `value` | string | Yes | Property value. |
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `warehouse_location` | string | S3 URI of the table's warehouse location (e.g. `s3://my-table-bucket/analytics/events`). |
-| `metadata_location` | string | S3 URI of the current Iceberg metadata JSON file. Updated on every schema or partition change. |
+> **Note:** Properties cannot be changed after the table is created. Any modification to a `property` block will cause an error. To change properties, recreate the resource.
 
 #### Supported Types
 
@@ -252,18 +287,18 @@ In addition to the arguments above, the following attributes are exported:
 
 #### Import
 
-Import an existing table using `table_bucket_arn,namespace,name`:
+Import an existing table using `warehouse,region,namespace,name`:
 
 ```shell
 terraform import brightai_s3_table.events \
-  "arn:aws:s3tables:us-east-1:123456789012:bucket/my-table-bucket,analytics,events"
+  "123456789012:s3tablescatalog/my-table-bucket,us-east-1,analytics,events"
 ```
 
 ## Building the Provider
 
 ```shell
-git clone https://github.com/anthonykosky/terraform-provider-test
-cd terraform-provider-test
+git clone https://github.com/BrightDotAi/terraform-provider-brightai-s3tables
+cd terraform-provider-brightai-s3tables
 make install   # builds and installs binary to $GOPATH/bin
 ```
 
@@ -272,7 +307,7 @@ To use a locally built provider without publishing to the registry, add a `dev_o
 ```hcl
 provider_installation {
   dev_overrides {
-    "anthonykosky/terraform-provider-test" = "/path/to/your/GOPATH/bin"
+    "BrightDotAi/brightai-s3tables" = "/path/to/your/GOPATH/bin"
   }
   direct {}
 }

@@ -1,4 +1,4 @@
-module github.com/anthonykosky/terraform-provider-test
+module github.com/BrightDotAi/terraform-provider-brightai-s3tables
 
 go 1.25.8
 

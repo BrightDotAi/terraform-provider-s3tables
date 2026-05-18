@@ -46,6 +46,7 @@ type S3TableResourceModel struct {
 	Name              types.String     `tfsdk:"name"`
 	Fields            []FieldModel     `tfsdk:"field"`
 	Partitions        []PartitionModel `tfsdk:"partition"`
+	Properties		  []PropertyModel  `tfsdk:"property"`
 }
 
 // FieldModel represents one column in the Iceberg schema.
@@ -62,6 +63,12 @@ type PartitionModel struct {
 	SourceName types.String `tfsdk:"source_name"`
 	Transform  types.String `tfsdk:"transform"`
 	Name       types.String `tfsdk:"name"`
+}
+
+// PropertyModel represents one field in the Iceberg property spec.
+type PropertyModel struct {
+	Name types.String `tfsdk:"name"`
+	Value types.String `tfsdk:"value"`
 }
 
 func (r *S3TableResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -153,6 +160,21 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 					},
 				},
 			},
+			"property": schema.ListNestedBlock{
+				MarkdownDescription: "Iceberg properties field.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							MarkdownDescription: "Property name.",
+							Required:            true,
+						},
+						"value": schema.StringAttribute{
+							MarkdownDescription: "Property value.",
+							Required:            true,
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -192,6 +214,13 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	properties, err := BuildProperties(data.Properties)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid property definition", err.Error())
+		return
+	}
+
+
 	cat, err := data.GetCatalog(ctx, r.awsCfg)
 	if err != nil {
 		resp.Diagnostics.AddError("Error Connecting to Iceberg Catalog", err.Error())
@@ -202,18 +231,18 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 
 	tbl, err := cat.CreateTable(ctx, identifier, icebergSchema,
 		catalog.WithPartitionSpec(partSpec),
+		catalog.WithProperties(*properties),
 	)
 	if err != nil {
 		resp.Diagnostics.AddError("Error creating Iceberg table", err.Error())
 		return
 	}
 
-	data.Fields, err = schemaToFieldModels(tbl.Schema())
+	err = setModelFromTable(&data, tbl)
 	if err != nil {
 		resp.Diagnostics.AddError("Error converting iceberg fields", err.Error())
 		return
 	}
-	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
 
 	tflog.Trace(ctx, "created Iceberg table", map[string]any{
 		"warehouse": data.Warehouse.ValueString(),
@@ -249,12 +278,11 @@ func (r *S3TableResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	data.Fields, err = schemaToFieldModels(tbl.Schema())
+	err = setModelFromTable(&data, tbl)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading Iceberg fields", err.Error())
 		return
 	}
-	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -294,6 +322,12 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Error updating partition spec", err.Error())
 		return
 	}
+	
+	err = checkPropChanges(state.Properties, plan.Properties)
+	if err != nil {
+		resp.Diagnostics.AddError("Error - Table property changes not supported", err.Error())
+		return
+	}
 
 	updated, err := txn.Commit(ctx)
 	if err != nil {
@@ -301,13 +335,11 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	plan.Fields, err  = schemaToFieldModels(updated.Schema())
+	err = setModelFromTable(&plan, updated)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading iceberg fields", err.Error())
 		return
 	}
-
-	plan.Partitions = specToPartitionModels(updated.Spec(), updated.Schema())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -328,7 +360,7 @@ func (r *S3TableResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 	identifier := data.GetIdentifier()
 
-	err = cat.DropTable(ctx, identifier)
+	err = cat.PurgeTable(ctx, identifier)
 	if err != nil {
 		if !isNotFound(err) {
 			resp.Diagnostics.AddError("Error deleting Iceberg table", err.Error())
@@ -377,7 +409,7 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 	if err != nil {
 		return nil, fmt.Errorf("field %q: %w", f.Name.ValueString(), err)
 	}
-	dv, err := dynamicValueToDefault(f.Default)
+	dv, err := dynamicValueToAny(f.Default)
 	if err != nil {
 		return nil, err
 	}
@@ -386,14 +418,17 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 		Name:     f.Name.ValueString(),
 		Type:     typ,
 		Required: f.Required.ValueBool(),
-		InitialDefault: dv.Any(),
-		WriteDefault: dv.Any(),
+		InitialDefault: dv,
+		WriteDefault: dv,
 		Doc:      f.Doc.ValueString(),
 	}
 	return &nestedField, nil
 }
 
-func dynamicValueToDefault(d types.Dynamic) (iceberg.Literal, error) {
+
+// Dynamic Values - for default value fields
+
+func dynamicValueToIcebergLit(d types.Dynamic) (iceberg.Literal, error) {
 	if d.IsNull() {
 		// option not specified
 		return nil, nil
@@ -414,6 +449,69 @@ func dynamicValueToDefault(d types.Dynamic) (iceberg.Literal, error) {
 	default:
 		return nil, fmt.Errorf("Unsupported default value type: %v", value)
 	}
+}
+
+func dynamicValueToAny(d types.Dynamic) (any, error) {
+	if d.IsNull() {
+		// option not specified
+		return nil, nil
+	}
+	switch value := d.UnderlyingValue().(type) {
+    case types.Bool:
+		return value.ValueBool(), nil
+	case types.Float64:
+		return value.ValueFloat64(), nil
+	case types.Float32:
+		return value.ValueFloat32(), nil
+	case types.Int64:
+		return value.ValueInt64(), nil
+	case types.Int32:
+		return value.ValueInt32(), nil
+    case types.String:
+		return value.ValueString(), nil
+	default:
+		return nil, fmt.Errorf("Unsupported default value type: %v", value)
+	}
+}
+
+
+func anyToDynamicValue(typ string, val any) (types.Dynamic, error) {
+	if val == nil {
+		return types.DynamicNull(), nil
+	}
+	var tv attr.Value
+	switch typ {
+	case "boolean":
+		tv = types.BoolValue(val.(bool))
+	case "int":
+		tv = types.Int32Value(val.(int32))
+	case "long":
+		tv = types.Int64Value(val.(int64))
+	case "float":
+		tv = types.Float32Value(val.(float32))
+	case "double":
+		tv = types.Float64Value(val.(float64))
+	case "string":
+		tv = types.StringValue(val.(string))
+	default:
+		return types.DynamicNull(), fmt.Errorf("Unsupported default value %v", val)
+	}
+	return types.DynamicValue(tv), nil
+}
+
+// Retrieving state
+
+// setModelFromTable - set model fields, partition spec, properties from iceberg table
+func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) (error) {
+	var err error
+	data.Fields, err = schemaToFieldModels(tbl.Schema())
+	if err != nil {
+		return err
+	}
+	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
+
+	data.Properties = propertiesToPropertyModels(tbl.Properties())
+	return nil
 }
 
 // BuildSchema converts Terraform field models to an Iceberg schema.
@@ -456,6 +554,15 @@ func BuildPartitionSpec(partitions []PartitionModel, schema *iceberg.Schema) (*i
 	return &spec, nil
 }
 
+// BuildProperties converts Terraform properties models to Iceberg properties
+func BuildProperties(props []PropertyModel) (*iceberg.Properties, error) {
+	iproperties := make(iceberg.Properties)
+	for _, prop := range props {
+		iproperties[prop.Name.ValueString()] = prop.Value.ValueString()
+	}
+	return &iproperties, nil
+}
+
 // schemaToFieldModels maps an Iceberg schema back to Terraform field models.
 func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	fields := schema.Fields()
@@ -475,31 +582,6 @@ func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	}
 	return models, nil
 }
-
-func anyToDynamicValue(typ string, val any) (types.Dynamic, error) {
-	if val == nil {
-		return types.DynamicNull(), nil
-	}
-	var tv attr.Value
-	switch typ {
-	case "boolean":
-		tv = types.BoolValue(val.(bool))
-	case "int":
-		tv = types.Int32Value(val.(int32))
-	case "long":
-		tv = types.Int64Value(val.(int64))
-	case "float":
-		tv = types.Float32Value(val.(float32))
-	case "double":
-		tv = types.Float64Value(val.(float64))
-	case "string":
-		tv = types.StringValue(val.(string))
-	default:
-		return types.DynamicNull(), fmt.Errorf("Unsupported default value %v", val)
-	}
-	return types.DynamicValue(tv), nil
-}
-
 // specToPartitionModels maps an Iceberg PartitionSpec back to Terraform partition models.
 func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) []PartitionModel {
 	var models []PartitionModel
@@ -517,6 +599,20 @@ func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) [
 	}
 	return models
 }
+
+// propertiesToPropertyModels
+func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
+	models := make([]PropertyModel, 0)
+	for name, val := range props {
+		models = append(models, PropertyModel{
+			Name:  types.StringValue(name),
+			Value: types.StringValue(val),
+		})
+	}
+	return models
+}
+
+// Applying changes
 
 // ApplySchemaChanges computes the diff between state and plan fields and applies
 // add/delete/update operations to the transaction.
@@ -571,7 +667,7 @@ func ApplySchemaChanges(txn *itable.Transaction, stateFields, planFields []Field
 			if err != nil {
 				return fmt.Errorf("field %q: %w", name, err)
 			}
-			dv, err := dynamicValueToDefault(pf.Default)
+			dv, err := dynamicValueToIcebergLit(pf.Default)
 			if err != nil {
 				return fmt.Errorf("field %q: %w", name, err)
 			}
@@ -649,6 +745,38 @@ func ApplyPartitionChanges(txn *itable.Transaction, statePartitions, planPartiti
 	}
 
 	return updater.Commit()
+}
+
+// checkPropChanges - returns error if properties are different
+// Note: table property updates not supported in icebert-go package
+func checkPropChanges(stateProps, planProps []PropertyModel) error {
+	// Build a map of current props by name.
+	current := make(map[string]PropertyModel)
+	for _, p := range stateProps {
+		current[p.Name.ValueString()] = p
+	}
+
+	// Build a set of plan partition field names.
+	plan := make(map[string]PropertyModel)
+	for _, p := range planProps {
+		plan[p.Name.ValueString()] = p
+	}
+
+	// check for changes
+	if len(current) != len(plan) {
+		return fmt.Errorf("Differing properties count: %d vs %d", len(current), len(plan))
+	}
+	for name, pp := range plan {
+		if sp, exists := current[name]; !exists || pp != sp {
+			return fmt.Errorf("Differing property: %v", name)
+		}
+	}
+	for name, _ := range current {
+		if _, exists := plan[name]; !exists {
+			return fmt.Errorf("Missing property: %v", name)
+		}
+	}
+	return nil
 }
 
 // parseIcebergType converts a type string to an iceberg.Type.
