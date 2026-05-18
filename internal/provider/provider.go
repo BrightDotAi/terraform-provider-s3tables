@@ -30,6 +30,7 @@ type BrightAIProvider struct {
 // BrightAIProviderModel describes the provider data model.
 type BrightAIProviderModel struct {
 	Region types.String `tfsdk:"region"`
+	Profile types.String `tfsdk:"profile"`
 }
 
 func (p *BrightAIProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -42,6 +43,12 @@ func (p *BrightAIProvider) Schema(ctx context.Context, req provider.SchemaReques
 		Attributes: map[string]schema.Attribute{
 			"region": schema.StringAttribute{
 				MarkdownDescription: "AWS region. Defaults to the value of the `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables.",
+				Optional:            true,
+			},
+		},
+		Attributes: map[string]schema.Attribute{
+			"profile": schema.StringAttribute{
+				MarkdownDescription: "AWS IAM Profile. Defaults to the value of the `AWS_PROFILE` environment variable.",
 				Optional:            true,
 			},
 		},
@@ -73,6 +80,9 @@ func loadAWSConfig(ctx context.Context, data BrightAIProviderModel) (aws.Config,
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if !data.Region.IsNull() && !data.Region.IsUnknown() {
 		opts = append(opts, awsconfig.WithRegion(data.Region.ValueString()))
+	}
+	if !data.Profile.IsNull() && !data.Profile.IsUnknown() {
+		opts = append(opts, config.WithSharedConfigProfile(data.Profile.ValueString()))
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(), opts...)

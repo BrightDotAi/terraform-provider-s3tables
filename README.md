@@ -23,7 +23,8 @@ terraform {
 }
 
 provider "brightai" {
-  region = "us-east-1"  # optional — falls back to AWS_REGION / AWS_DEFAULT_REGION
+  region  = "us-east-1"  # optional — falls back to AWS_REGION / AWS_DEFAULT_REGION
+  profile = "my-profile" # optional — falls back to AWS_PROFILE
 }
 ```
 
@@ -32,8 +33,9 @@ provider "brightai" {
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `region` | string | No | AWS region. Defaults to `AWS_REGION` or `AWS_DEFAULT_REGION` environment variables. |
+| `profile` | string | No | AWS named profile from `~/.aws/credentials` or `~/.aws/config`. Defaults to `AWS_PROFILE` environment variable. |
 
-The provider uses the standard AWS credential chain: environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), shared credentials file, EC2/ECS instance profiles, or IAM roles.
+The provider uses the standard AWS credential chain: environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), shared credentials/config file (optionally selecting a named profile with `profile`), EC2/ECS instance profiles, or IAM roles.
 
 ## Resources
 
