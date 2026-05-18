@@ -45,8 +45,6 @@ func (p *BrightAIProvider) Schema(ctx context.Context, req provider.SchemaReques
 				MarkdownDescription: "AWS region. Defaults to the value of the `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables.",
 				Optional:            true,
 			},
-		},
-		Attributes: map[string]schema.Attribute{
 			"profile": schema.StringAttribute{
 				MarkdownDescription: "AWS IAM Profile. Defaults to the value of the `AWS_PROFILE` environment variable.",
 				Optional:            true,
@@ -82,7 +80,7 @@ func loadAWSConfig(ctx context.Context, data BrightAIProviderModel) (aws.Config,
 		opts = append(opts, awsconfig.WithRegion(data.Region.ValueString()))
 	}
 	if !data.Profile.IsNull() && !data.Profile.IsUnknown() {
-		opts = append(opts, config.WithSharedConfigProfile(data.Profile.ValueString()))
+		opts = append(opts, awsconfig.WithSharedConfigProfile(data.Profile.ValueString()))
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(), opts...)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sort"
 
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -482,17 +483,41 @@ func anyToDynamicValue(typ string, val any) (types.Dynamic, error) {
 	var tv attr.Value
 	switch typ {
 	case "boolean":
-		tv = types.BoolValue(val.(bool))
+		b, ok := val.(bool)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type boolean", val)
+		}
+		tv = types.BoolValue(b)
 	case "int":
-		tv = types.Int32Value(val.(int32))
+		i32, ok := val.(int32)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type int", val)
+		}
+		tv = types.Int32Value(i32)
 	case "long":
-		tv = types.Int64Value(val.(int64))
+		i64, ok := val.(int64)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type long", val)
+		}
+		tv = types.Int64Value(i64)
 	case "float":
-		tv = types.Float32Value(val.(float32))
+		f32, ok := val.(float32)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
+		}
+		tv = types.Float32Value(f32)
 	case "double":
-		tv = types.Float64Value(val.(float64))
+		f64, ok := val.(float64)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type double", val)
+		}
+		tv = types.Float64Value(f64)
 	case "string":
-		tv = types.StringValue(val.(string))
+		s, ok := val.(string)
+		if !ok {
+			return types.DynamicNull(), fmt.Errorf("Type missmatch: %v not of type string", val)
+		}
+		tv = types.StringValue(s)
 	default:
 		return types.DynamicNull(), fmt.Errorf("Unsupported default value %v", val)
 	}
@@ -603,10 +628,17 @@ func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) [
 // propertiesToPropertyModels
 func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 	models := make([]PropertyModel, 0)
-	for name, val := range props {
+
+	prop_names := make([]string, 0)
+	for name, _ := range props {
+		prop_names = append(prop_names, name)
+	}
+	sort.Strings(prop_names)
+
+	for _, name := range prop_names {
 		models = append(models, PropertyModel{
 			Name:  types.StringValue(name),
-			Value: types.StringValue(val),
+			Value: types.StringValue(props[name]),
 		})
 	}
 	return models
