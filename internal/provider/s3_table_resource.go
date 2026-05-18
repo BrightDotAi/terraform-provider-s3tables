@@ -311,13 +311,13 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	txn := tbl.NewTransaction()
 
-	err = ApplySchemaChanges(txn, state.Fields, plan.Fields)
+	err = ApplySchemaChanges(&txnAdapter{txn}, state.Fields, plan.Fields)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating schema", err.Error())
 		return
 	}
 
-	err = ApplyPartitionChanges(txn, state.Partitions, plan.Partitions)
+	err = ApplyPartitionChanges(&txnAdapter{txn}, state.Partitions, plan.Partitions)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating partition spec", err.Error())
 		return
@@ -614,9 +614,41 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 
 // Applying changes
 
+// schemaUpdater, partitionUpdater, tableTransaction are thin interfaces over the
+// iceberg-go concrete types so that Apply* functions can be tested without a
+// real catalog connection.
+type schemaUpdater interface {
+	AddColumn(path []string, fieldType iceberg.Type, doc string, required bool, defaultValue iceberg.Literal) *itable.UpdateSchema
+	DeleteColumn(path []string) *itable.UpdateSchema
+	UpdateColumn(path []string, update itable.ColumnUpdate) *itable.UpdateSchema
+	Commit() error
+}
+
+type partitionUpdater interface {
+	AddField(sourceColName string, transform iceberg.Transform, partitionFieldName string) *itable.UpdateSpec
+	RemoveField(name string) *itable.UpdateSpec
+	Commit() error
+}
+
+type tableTransaction interface {
+	UpdateSchema(caseSensitive, allowIncompatibleChanges bool) schemaUpdater
+	UpdateSpec(caseSensitive bool) partitionUpdater
+}
+
+// txnAdapter wraps *itable.Transaction to satisfy tableTransaction.
+type txnAdapter struct{ t *itable.Transaction }
+
+func (a *txnAdapter) UpdateSchema(caseSensitive, allowIncompatible bool) schemaUpdater {
+	return a.t.UpdateSchema(caseSensitive, allowIncompatible)
+}
+
+func (a *txnAdapter) UpdateSpec(caseSensitive bool) partitionUpdater {
+	return a.t.UpdateSpec(caseSensitive)
+}
+
 // ApplySchemaChanges computes the diff between state and plan fields and applies
 // add/delete/update operations to the transaction.
-func ApplySchemaChanges(txn *itable.Transaction, stateFields, planFields []FieldModel) error {
+func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldModel) error {
 
 	// Build a map of current Iceberg fields by name.
 	current := make(map[string]FieldModel)
@@ -689,7 +721,7 @@ func ApplySchemaChanges(txn *itable.Transaction, stateFields, planFields []Field
 
 // applyPartitionChanges computes the diff between the current spec and the plan
 // and applies add/remove operations to the transaction.
-func ApplyPartitionChanges(txn *itable.Transaction, statePartitions, planPartitions []PartitionModel) error {
+func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions []PartitionModel) error {
 	// Build a map of current partition fields by name.
 	current := make(map[string]PartitionModel)
 	for _, p := range statePartitions {
