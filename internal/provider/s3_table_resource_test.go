@@ -173,21 +173,101 @@ func TestToNestedField(t *testing.T) {
 }
 
 func TestBuildProperties(t *testing.T) {
-	props := []PropertyModel{
-		{Name: types.StringValue("write.metadata.compression-codec"), Value: types.StringValue("gzip")},
-		{Name: types.StringValue("write.target-file-size-bytes"), Value: types.StringValue("134217728")},
-	}
+	t.Run("user_props_plus_defaults", func(t *testing.T) {
+		props := []PropertyModel{
+			{Name: types.StringValue("write.metadata.compression-codec"), Value: types.StringValue("gzip")},
+			{Name: types.StringValue("write.target-file-size-bytes"), Value: types.StringValue("134217728")},
+		}
+		p, err := BuildProperties(props)
+		if err != nil {
+			t.Fatalf("BuildProperties() error: %v", err)
+		}
+		wantLen := 2 + len(prop_defaults)
+		if len(*p) != wantLen {
+			t.Fatalf("expected %d properties (user + defaults), got %d", wantLen, len(*p))
+		}
+		if (*p)["write.metadata.compression-codec"] != "gzip" {
+			t.Errorf("compression-codec = %q, want %q", (*p)["write.metadata.compression-codec"], "gzip")
+		}
+		for name, val := range prop_defaults {
+			if (*p)[name] != val {
+				t.Errorf("default property %q = %q, want %q", name, (*p)[name], val)
+			}
+		}
+	})
 
-	p, err := BuildProperties(props)
-	if err != nil {
-		t.Fatalf("BuildProperties() error: %v", err)
-	}
-	if len(*p) != 2 {
-		t.Fatalf("expected 2 properties, got %d", len(*p))
-	}
-	if (*p)["write.metadata.compression-codec"] != "gzip" {
-		t.Errorf("unexpected value for compression-codec: %q", (*p)["write.metadata.compression-codec"])
-	}
+	t.Run("user_overrides_default", func(t *testing.T) {
+		props := []PropertyModel{
+			{Name: types.StringValue("write_compression"), Value: types.StringValue("snappy")},
+		}
+		p, err := BuildProperties(props)
+		if err != nil {
+			t.Fatalf("BuildProperties() error: %v", err)
+		}
+		if (*p)["write_compression"] != "snappy" {
+			t.Errorf("write_compression = %q, want %q (user value should override default)", (*p)["write_compression"], "snappy")
+		}
+	})
+
+	t.Run("empty_input_gets_defaults", func(t *testing.T) {
+		p, err := BuildProperties(nil)
+		if err != nil {
+			t.Fatalf("BuildProperties() error: %v", err)
+		}
+		if len(*p) != len(prop_defaults) {
+			t.Fatalf("expected %d default properties, got %d", len(prop_defaults), len(*p))
+		}
+		for name, val := range prop_defaults {
+			if (*p)[name] != val {
+				t.Errorf("default property %q = %q, want %q", name, (*p)[name], val)
+			}
+		}
+	})
+}
+
+func TestPropertiesToPropertyModels(t *testing.T) {
+	t.Run("default_props_filtered_out", func(t *testing.T) {
+		props := iceberg.Properties{
+			"table_type":       "iceberg",
+			"write_compression": "zstd",
+		}
+		models := propertiesToPropertyModels(props)
+		if len(models) != 0 {
+			t.Errorf("expected default-only properties to produce 0 models, got %d: %v", len(models), models)
+		}
+	})
+
+	t.Run("non_default_props_included", func(t *testing.T) {
+		props := iceberg.Properties{
+			"table_type":                      "iceberg",
+			"write_compression":               "zstd",
+			"write.metadata.compression-codec": "gzip",
+		}
+		models := propertiesToPropertyModels(props)
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model (non-default prop), got %d", len(models))
+		}
+		if models[0].Name.ValueString() != "write.metadata.compression-codec" {
+			t.Errorf("model name = %q, want %q", models[0].Name.ValueString(), "write.metadata.compression-codec")
+		}
+		if models[0].Value.ValueString() != "gzip" {
+			t.Errorf("model value = %q, want %q", models[0].Value.ValueString(), "gzip")
+		}
+	})
+
+	t.Run("overridden_default_included", func(t *testing.T) {
+		props := iceberg.Properties{
+			"table_type":       "iceberg",
+			"write_compression": "snappy",
+		}
+		models := propertiesToPropertyModels(props)
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model (overridden default), got %d", len(models))
+		}
+		if models[0].Name.ValueString() != "write_compression" || models[0].Value.ValueString() != "snappy" {
+			t.Errorf("unexpected model: %+v", models[0])
+		}
+	})
 }
 
 func TestBuildPartitionSpec_Unpartitioned(t *testing.T) {

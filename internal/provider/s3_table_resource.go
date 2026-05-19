@@ -13,6 +13,7 @@ import (
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	"github.com/apache/iceberg-go/catalog/rest"
+	_ "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -32,6 +33,15 @@ var _ resource.ResourceWithImportState = &S3TableResource{}
 func NewS3TableResource() resource.Resource {
 	return &S3TableResource{}
 }
+
+// Property defaults added to table automatically
+
+var prop_defaults = map[string]string {
+	"table_type": "iceberg",
+	"write_compression": "zstd",
+	"write.parquet.compression-codec": "zstd",
+}
+
 
 // S3TableResource defines the resource implementation.
 type S3TableResource struct {
@@ -130,7 +140,7 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 						"default": schema.StringAttribute{
 							MarkdownDescription: "Default value for column. Int or float values will be parsed from string",
 							Optional:            true,
-							Computed:            true,
+							Computed:            false,
 						},
 						"doc": schema.StringAttribute{
 							MarkdownDescription: "Documentation string for the column.",
@@ -329,13 +339,20 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	updated, err := txn.Commit(ctx)
+	txn.Commit(ctx)
+	// Ignoring errors from Commit because of bug loading reloading meta-data after
+	// commit causes spurious errors.
+	// Instead will refresh table and reload state to confirm updates have been
+	// applied correctly.
+
+	// Reload table
+	err = tbl.Refresh(ctx)
 	if err != nil {
-		resp.Diagnostics.AddError("Error committing table changes", err.Error())
+		resp.Diagnostics.AddError("Error loading iceberg table", err.Error())
 		return
 	}
 
-	err = setModelFromTable(&plan, updated)
+	err = setModelFromTable(&plan, tbl)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading iceberg fields", err.Error())
 		return
@@ -585,6 +602,12 @@ func BuildProperties(props []PropertyModel) (*iceberg.Properties, error) {
 	for _, prop := range props {
 		iproperties[prop.Name.ValueString()] = prop.Value.ValueString()
 	}
+	// defaults added by s3tables:
+	for name, val := range prop_defaults {
+		if _, exists := iproperties[name]; !exists {
+			iproperties[name] = val
+		}
+	}
 	return &iproperties, nil
 }
 
@@ -692,10 +715,12 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 	sort.Strings(prop_names)
 
 	for _, name := range prop_names {
-		models = append(models, PropertyModel{
-			Name:  types.StringValue(name),
-			Value: types.StringValue(props[name]),
-		})
+		if dv, exists := prop_defaults[name]; !exists || props[name] != dv {
+			models = append(models, PropertyModel{
+				Name:  types.StringValue(name),
+				Value: types.StringValue(props[name]),
+			})
+		}
 	}
 	return models
 }
@@ -797,6 +822,8 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 			}
 			if !exists {
 				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
+				fmt.Printf("%%%%%%%%%%%%%%%%\nAddColumn(%v, %v, %v, %v, %v)\n%%%%%%%%%%%%%%",
+							name, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
 			} else {
 				updater.UpdateColumn([]string{name}, itable.ColumnUpdate{
 					FieldType: iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},
