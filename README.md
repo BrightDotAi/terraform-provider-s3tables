@@ -4,6 +4,27 @@ Terraform provider for managing AWS S3 Tables Iceberg resources via the Glue cat
 
 Registry address: `registry.terraform.io/BrightDotAi/brightai-s3tables`
 
+## Motivation
+
+This provider is intended to provide resources to overcome limitations of the AWS `aws_s3tables_table`
+resource provided by the `aws` and `awscc` providers. Speciffically it will:
+
+- Allow for specificataion of partitions and properties in S3tables table declarations.
+- Allow for import of existing s3tables tables, and for updating/evolving schemas for s3tables tables 
+without causing the table to be destroyed and recreated.
+
+### Known limitations
+
+- The resource makes use of AWS glue RESTful interface, and ther
+[iceberg-go](https://pkg.go.dev/github.com/apache/iceberg-go) and is subject
+to the current limitations of that package (see <https://go.iceberg.apache.org/>).
+- If using Lakeformation permissions to manage access to S3Tables, you will need to ensure that
+the role being used by Terraform has `ADD`, `DELETE`, `ALTER` and `DESCRIBE` on the S3tables table.
+If importing an existing S3Tables table, `DESCRIBE` permissions will also be needed on the S3tables
+catalog.
+- Currently default values are supported for types `boolean`, `int`, `long`, `float`, `double` and `string` only. 
+(In addition, adding default values requires use of icebert v3 format.)
+
 ## Requirements
 
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
