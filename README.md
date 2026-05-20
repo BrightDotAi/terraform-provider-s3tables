@@ -60,7 +60,7 @@ The provider uses the standard AWS credential chain: environment variables (`AWS
 
 ## Resources
 
-### `brightai_s3_table`
+### `brightai_s3tables_table`
 
 Manages an [Apache Iceberg](https://iceberg.apache.org/) table in an S3 Tables bucket via the AWS Glue catalog.
 
@@ -71,7 +71,7 @@ Schema columns and partition fields can be added or removed without destroying a
 #### Example — Basic table
 
 ```hcl
-resource "brightai_s3_table" "events" {
+resource "brightai_s3tables_table" "events" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -105,7 +105,7 @@ resource "brightai_s3_table" "events" {
 #### Example — Table with time-based and identity partitions
 
 ```hcl
-resource "brightai_s3_table" "events_partitioned" {
+resource "brightai_s3tables_table" "events_partitioned" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -162,7 +162,7 @@ resource "brightai_s3_table" "events_partitioned" {
 #### Example — Bucket and truncate partitioning
 
 ```hcl
-resource "brightai_s3_table" "metrics" {
+resource "brightai_s3tables_table" "metrics" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "monitoring"
@@ -215,7 +215,7 @@ resource "brightai_s3_table" "metrics" {
 #### Example — Table with properties
 
 ```hcl
-resource "brightai_s3_table" "events" {
+resource "brightai_s3tables_table" "events" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -313,7 +313,7 @@ resource "brightai_s3_table" "events" {
 Import an existing table using `warehouse,region,namespace,name`:
 
 ```shell
-terraform import brightai_s3_table.events \
+terraform import brightai_s3tables_table.events \
   "123456789012:s3tablescatalog/my-table-bucket,us-east-1,analytics,events"
 ```
 

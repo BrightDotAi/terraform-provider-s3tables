@@ -1,4 +1,4 @@
-// Copyright IBM Corp. 2021, 2025
+// Copyright BrightAI 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package provider
@@ -49,18 +49,24 @@ func TestParseIcebergType(t *testing.T) {
 func TestBuildSchema(t *testing.T) {
 	fields := []FieldModel{
 		{
-			Name:     types.StringValue("id"),
-			Type:     types.StringValue("long"),
-			Required: types.BoolValue(true),
-			Default:  types.StringNull(),
-			Doc:      types.StringValue("primary key"),
+			Name:          types.StringValue("id"),
+			Type:          types.StringValue("long"),
+			Required:      types.BoolValue(true),
+			DefaultString: types.StringNull(),
+			DefaultInt:    types.Int64Null(),
+			DefaultFloat:  types.Float64Null(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue("primary key"),
 		},
 		{
-			Name:     types.StringValue("value"),
-			Type:     types.StringValue("string"),
-			Required: types.BoolValue(false),
-			Default:  types.StringNull(),
-			Doc:      types.StringValue(""),
+			Name:          types.StringValue("value"),
+			Type:          types.StringValue("string"),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(),
+			DefaultInt:    types.Int64Null(),
+			DefaultFloat:  types.Float64Null(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
 		},
 	}
 
@@ -95,11 +101,14 @@ func TestBuildSchema(t *testing.T) {
 func TestBuildSchema_InvalidType(t *testing.T) {
 	fields := []FieldModel{
 		{
-			Name:     types.StringValue("x"),
-			Type:     types.StringValue("notatype"),
-			Required: types.BoolValue(false),
-			Default:  types.StringNull(),
-			Doc:      types.StringValue(""),
+			Name:          types.StringValue("x"),
+			Type:          types.StringValue("notatype"),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(),
+			DefaultInt:    types.Int64Null(),
+			DefaultFloat:  types.Float64Null(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
 		},
 	}
 	if _, err := BuildSchema(fields); err == nil {
@@ -110,11 +119,14 @@ func TestBuildSchema_InvalidType(t *testing.T) {
 func TestFieldDefaultValues(t *testing.T) {
 	fields := []FieldModel{
 		{
-			Name:     types.StringValue("score"),
-			Type:     types.StringValue("double"),
-			Required: types.BoolValue(false), // schema default
-			Default:  types.StringValue("0"),
-			Doc:      types.StringValue(""), // schema default
+			Name:          types.StringValue("score"),
+			Type:          types.StringValue("double"),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(),
+			DefaultInt:    types.Int64Null(),
+			DefaultFloat:  types.Float64Value(0.0),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
 		},
 	}
 
@@ -135,30 +147,135 @@ func TestFieldDefaultValues(t *testing.T) {
 }
 
 func TestToNestedField(t *testing.T) {
+	noDefault := func(typ string) FieldModel {
+		return FieldModel{
+			Name: types.StringValue("col"), Type: types.StringValue(typ),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(), DefaultInt: types.Int64Null(),
+			DefaultFloat:  types.Float64Null(), DefaultBool: types.BoolNull(),
+			Doc: types.StringValue(""),
+		}
+	}
+
 	tests := []struct {
 		name        string
-		fieldType   string
-		defaultVal  types.String
+		field       FieldModel
 		wantDefault any
+		wantErr     bool
 	}{
-		{"omitted_default", "long", types.StringNull(), nil},
-		{"boolean", "boolean", types.StringValue("true"), true},
-		{"int", "int", types.StringValue("7"), int32(7)},
-		{"long", "long", types.StringValue("42"), int64(42)},
-		{"float", "float", types.StringValue("2.5"), float32(2.5)},
-		{"double", "double", types.StringValue("3.14"), float64(3.14)},
-		{"string", "string", types.StringValue("hello"), "hello"},
+		{name: "omitted_default", field: noDefault("long"), wantDefault: nil},
+		{
+			name: "boolean",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("boolean"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Null(),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolValue(true),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: true,
+		},
+		{
+			name: "int",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("int"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Value(7),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: int32(7),
+		},
+		{
+			name: "long",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("long"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Value(42),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: int64(42),
+		},
+		{
+			name: "float",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("float"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Null(),
+				DefaultFloat: types.Float64Value(2.5), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: float32(2.5),
+		},
+		{
+			name: "double",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("double"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Null(),
+				DefaultFloat: types.Float64Value(3.14), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: float64(3.14),
+		},
+		{
+			name: "string",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("string"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringValue("hello"), DefaultInt: types.Int64Null(),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantDefault: "hello",
+		},
+		// Negative: two defaults set simultaneously → error regardless of type
+		{
+			name: "multiple_defaults_error",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("long"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Value(1),
+				DefaultFloat: types.Float64Value(1.0), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantErr: true,
+		},
+		// Negative: bool default on a long field → error
+		{
+			name: "wrong_default_type_bool_on_long",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("long"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Null(),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolValue(true),
+				Doc: types.StringValue(""),
+			},
+			wantErr: true,
+		},
+		// Negative: int default on a boolean field → error
+		{
+			name: "wrong_default_type_int_on_boolean",
+			field: FieldModel{
+				Name: types.StringValue("col"), Type: types.StringValue("boolean"),
+				Required:      types.BoolValue(false),
+				DefaultString: types.StringNull(), DefaultInt: types.Int64Value(1),
+				DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(),
+				Doc: types.StringValue(""),
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := FieldModel{
-				Name:     types.StringValue("col"),
-				Type:     types.StringValue(tt.fieldType),
-				Required: types.BoolValue(false),
-				Default:  tt.defaultVal,
-				Doc:      types.StringValue(""),
+			nf, err := tt.field.toNestedField(0)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
 			}
-			nf, err := f.toNestedField(0)
 			if err != nil {
 				t.Fatalf("toNestedField() unexpected error: %v", err)
 			}
@@ -272,7 +389,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 func TestBuildPartitionSpec_Unpartitioned(t *testing.T) {
 	s, _ := BuildSchema([]FieldModel{
-		{Name: types.StringValue("ts"), Type: types.StringValue("timestamp"), Required: types.BoolValue(false), Default: types.StringNull(), Doc: types.StringValue("")},
+		{Name: types.StringValue("ts"), Type: types.StringValue("timestamp"), Required: types.BoolValue(false), DefaultString: types.StringNull(), DefaultInt: types.Int64Null(), DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(), Doc: types.StringValue("")},
 	})
 	spec, err := BuildPartitionSpec(nil, s)
 	if err != nil {
@@ -360,11 +477,14 @@ func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater       { return m.p
 func TestApplySchemaChanges(t *testing.T) {
 	f := func(name, typ string, required bool) FieldModel {
 		return FieldModel{
-			Name:     types.StringValue(name),
-			Type:     types.StringValue(typ),
-			Required: types.BoolValue(required),
-			Default:  types.StringNull(),
-			Doc:      types.StringValue(""),
+			Name:          types.StringValue(name),
+			Type:          types.StringValue(typ),
+			Required:      types.BoolValue(required),
+			DefaultString: types.StringNull(),
+			DefaultInt:    types.Int64Null(),
+			DefaultFloat:  types.Float64Null(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
 		}
 	}
 
@@ -408,8 +528,8 @@ func TestApplySchemaChanges(t *testing.T) {
 	})
 
 	t.Run("update_column", func(t *testing.T) {
-		state := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(false), Default: types.StringNull(), Doc: types.StringValue("")}
-		plan := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(true), Default: types.StringNull(), Doc: types.StringValue("pk")}
+		state := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(false), DefaultString: types.StringNull(), DefaultInt: types.Int64Null(), DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(), Doc: types.StringValue("")}
+		plan := FieldModel{Name: types.StringValue("id"), Type: types.StringValue("long"), Required: types.BoolValue(true), DefaultString: types.StringNull(), DefaultInt: types.Int64Null(), DefaultFloat: types.Float64Null(), DefaultBool: types.BoolNull(), Doc: types.StringValue("pk")}
 		mock := &mockSchemaUpdater{}
 		txn := &mockTransaction{schema: mock}
 		if err := ApplySchemaChanges(txn, []FieldModel{state}, []FieldModel{plan}); err != nil {
@@ -584,34 +704,34 @@ func TestAccS3TableResource(t *testing.T) {
 			{
 				Config: testAccS3TableResourceConfig(warehouse, region, namespace, name),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "warehouse", warehouse),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "region", region),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "namespace", namespace),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "name", name),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "warehouse", warehouse),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "region", region),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "namespace", namespace),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "name", name),
 
 					// field values
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.0.name", "id"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.0.type", "long"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.0.required", "true"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.1.name", "event_time"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.1.type", "timestamp"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.0.name", "id"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.0.type", "long"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.0.required", "true"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.1.name", "event_time"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.1.type", "timestamp"),
 
 					// field defaults: required=false, doc="" when not specified
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.1.required", "false"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.1.doc", ""),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.1.required", "false"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.1.doc", ""),
 
 					// field with explicit default value
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.2.name", "score"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "field.2.type", "double"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.2.name", "score"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "field.2.type", "double"),
 
 					// properties
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "property.0.name", "write.metadata.compression-codec"),
-					resource.TestCheckResourceAttr("brightai_s3_table.test", "property.0.value", "gzip"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "property.0.name", "write.metadata.compression-codec"),
+					resource.TestCheckResourceAttr("brightai_s3tables_table.test", "property.0.value", "gzip"),
 				),
 			},
 			// Import
 			{
-				ResourceName:      "brightai_s3_table.test",
+				ResourceName:      "brightai_s3tables_table.test",
 				ImportState:       true,
 				ImportStateVerify: true,
 				ImportStateId:     fmt.Sprintf("%s,%s,%s,%s", warehouse, region, namespace, name),
@@ -622,7 +742,7 @@ func TestAccS3TableResource(t *testing.T) {
 
 func testAccS3TableResourceConfig(warehouse, region, namespace, name string) string {
 	return fmt.Sprintf(`
-resource "brightai_s3_table" "test" {
+resource "brightai_s3tables_table" "test" {
   warehouse = %[1]q
   region    = %[2]q
   namespace = %[3]q
@@ -642,9 +762,9 @@ resource "brightai_s3_table" "test" {
   }
 
   field {
-    name    = "score"
-    type    = "double"
-    default = "0.0"
+    name          = "score"
+    type          = "double"
+    default_float = 0.0
   }
 
   property {

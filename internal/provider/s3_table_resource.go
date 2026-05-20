@@ -1,4 +1,4 @@
-// Copyright IBM Corp. 2021, 2025
+// Copyright BrightAI 2026
 // SPDX-License-Identifier: MPL-2.0
 
 package provider
@@ -64,7 +64,10 @@ type FieldModel struct {
 	Name     types.String `tfsdk:"name"`
 	Type     types.String `tfsdk:"type"`
 	Required types.Bool   `tfsdk:"required"`
-	Default  types.String `tfsdk:"default"`
+	DefaultString  types.String `tfsdk:"default_string"`
+	DefaultInt  types.Int64 `tfsdk:"default_int"`
+	DefaultFloat  types.Float64 `tfsdk:"default_float"`
+	DefaultBool  types.Bool `tfsdk:"default_bool"`
 	Doc      types.String `tfsdk:"doc"`
 }
 
@@ -82,7 +85,7 @@ type PropertyModel struct {
 }
 
 func (r *S3TableResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_s3_table"
+	resp.TypeName = req.ProviderTypeName + "_s3tables_table"
 }
 
 func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -137,8 +140,23 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							Computed:            true,
 							Default:             booldefault.StaticBool(false),
 						},
-						"default": schema.StringAttribute{
-							MarkdownDescription: "Default value for column. Int or float values will be parsed from string",
+						"default_string": schema.StringAttribute{
+							MarkdownDescription: "Default value for string column. At most one of `default_string`, `default_bool`, `default_int` or `default_float` should be set.",
+							Optional:            true,
+							Computed:            false,
+						},
+						"default_int": schema.Int64Attribute{
+							MarkdownDescription: "Default value for integer column. At most one of `default_string`, `default_bool`, `default_int` or `default_float` should be set.",
+							Optional:            true,
+							Computed:            false,
+						},
+						"default_float": schema.Float64Attribute{
+							MarkdownDescription: "Default value for float column. At most one of `default_string`, `default_bool`, `default_int` or `default_float` should be set.",
+							Optional:            true,
+							Computed:            false,
+						},
+						"default_bool": schema.BoolAttribute{
+							MarkdownDescription: "Default value for bool column. At most one of `default_string`, `default_bool`, `default_int` or `default_float` should be set.",
 							Optional:            true,
 							Computed:            false,
 						},
@@ -443,50 +461,54 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 }
 
 func (f *FieldModel) getFieldDefault() (any, error) {
-	if f.Default.IsNull() || f.Default.IsUnknown() {
+	default_count := 0
+	if !f.DefaultString.IsNull() && !f.DefaultString.IsUnknown() {default_count++}
+	if !f.DefaultInt.IsNull() && !f.DefaultInt.IsUnknown() {default_count++}
+	if !f.DefaultFloat.IsNull() && !f.DefaultFloat.IsUnknown() {default_count++}
+	if !f.DefaultBool.IsNull() && !f.DefaultBool.IsUnknown() {default_count++}
+
+	if default_count == 0 {
 		return nil, nil
 	}
-	ds := f.Default.ValueString()
+	if default_count > 1 {
+		return nil, fmt.Errorf("Multiple default values set for field %s", f.Name)
+	}
 
 	switch typ := f.Type.ValueString(); typ {
 	case "boolean":
-		switch ds {
-		case "true", "True":
-			return true, nil
-		case "false", "False":
-			return false, nil
-		default:
-			return nil, fmt.Errorf("Could not parse default to boolean: %s", ds)
+		if f.DefaultBool.IsNull() || f.DefaultBool.IsUnknown() {
+			return nil, fmt.Errorf("Non-boolean default set for boolean field %s", f.Name)
 		}
+		return f.DefaultBool.ValueBool(), nil
 	case "int", "long":
-		i, err := strconv.ParseInt(ds, 10, 64)
-		if err != nil {
-			return nil, err
+		if f.DefaultInt.IsNull() || f.DefaultInt.IsUnknown() {
+			return nil, fmt.Errorf("Non-integer default set for integer field %s", f.Name)
 		}
 		if typ == "long" {
-			return i, nil
+			return f.DefaultInt.ValueInt64(), nil
 		} else {
-			return int32(i), nil
+			return int32(f.DefaultInt.ValueInt64()), nil
 		}
 	case "float", "double":
-		f, err := strconv.ParseFloat(ds, 64)
-		if err != nil {
-			return nil, err
+		if f.DefaultFloat.IsNull() || f.DefaultInt.IsUnknown() {
+			return nil, fmt.Errorf("Non-float default set for float field %s", f.Name)
 		}
 		if typ == "double" {
-			return f, nil
+			return f.DefaultFloat.ValueFloat64(), nil
 		} else {
-			return float32(f), nil
+			return float32(f.DefaultFloat.ValueFloat64()), nil
 		}
 	case "string":
-		return ds, nil
+		if f.DefaultString.IsNull() || f.DefaultString.IsUnknown() {
+			return nil, fmt.Errorf("Non-string default set for string field %s", f.Name)
+		}
+		return f.DefaultString.ValueString(), nil
 	default :
 		return nil, fmt.Errorf("Unsupported default type: %s", typ)
 	}
 }
 
 
-// Dynamic Values - for default value fields
 
 func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
 	if d == nil {
@@ -611,80 +633,78 @@ func BuildProperties(props []PropertyModel) (*iceberg.Properties, error) {
 	return &iproperties, nil
 }
 
+func  icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
+	model := FieldModel{
+			Name:     types.StringValue(f.Name),
+			Type:     types.StringValue(f.Type.String()),
+			Required: types.BoolValue(f.Required),
+			DefaultString:  types.StringNull(),
+			DefaultInt: 	types.Int64Null(),
+			DefaultFloat:	types.Float64Null(),
+			DefaultBool:	types.BoolNull(),
+			Doc:      types.StringValue(f.Doc),
+		}
+	val := f.WriteDefault
+	if val != nil {
+    	switch f.Type.String() {
+    	case "boolean":
+    		b, ok := val.(bool)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type boolean", val)
+    		}
+			model.DefaultBool = types.BoolValue(b)
+    	case "int":
+    		i32, ok := val.(int32)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type int", val)
+    		}
+			model.DefaultInt = types.Int64Value(int64(i32))
+    	case "long":
+    		i64, ok := val.(int64)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type long", val)
+    		}
+			model.DefaultInt = types.Int64Value(i64)
+    	case "float":
+    		f32, ok := val.(float32)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type float", val)
+    		}
+			model.DefaultFloat = types.Float64Value(float64(f32))
+    	case "double":
+    		f64, ok := val.(float64)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type float", val)
+    		}
+			model.DefaultFloat = types.Float64Value(f64)
+    	case "string":
+    		s, ok := val.(string)
+    		if !ok {
+    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type string", val)
+    		}
+			model.DefaultString = types.StringValue(s)
+    	default:
+    		return FieldModel{}, fmt.Errorf("Unsupported default value %v", val)
+    	}
+    }
+	return model, nil
+}
+
 // schemaToFieldModels maps an Iceberg schema back to Terraform field models.
 func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	fields := schema.Fields()
 	models := make([]FieldModel, 0, len(fields))
 	for _, f := range fields {
-		dv, err := anyToStringValue(f.Type.String(), f.WriteDefault)
-		if 	err != nil {
-			return nil, err
+		m, err := icebergToFieldModel(&f)
+		if err != nil {
+			return models, err
 		}
-		models = append(models, FieldModel{
-			Name:     types.StringValue(f.Name),
-			Type:     types.StringValue(f.Type.String()),
-			Required: types.BoolValue(f.Required),
-			Default:  dv,
-			Doc:      types.StringValue(f.Doc),
-		})
+		models = append(models, m)
 	}
 	return models, nil
 }
 
-// Convert a default value to Terraform String Value
-func anyToStringValue(typ string, val any) (types.String, error) {
-	if val == nil {
-		return types.StringNull(), nil
-	}
-	switch typ {
-	case "boolean":
-		b, ok := val.(bool)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type boolean", val)
-		} else if b {
-			return types.StringValue("true"), nil
-		} else {
-			return types.StringValue("false"), nil
-		}
-	case "int":
-		i32, ok := val.(int32)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type int", val)
-		} else {
-			return types.StringValue(strconv.Itoa(int(i32))), nil
-		}
-	case "long":
-		i64, ok := val.(int64)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type long", val)
-		} else {
-			return types.StringValue(strconv.FormatInt(i64, 10)), nil
-		}
-	case "float":
-		f32, ok := val.(float32)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
-		} else {
-			return types.StringValue(strconv.FormatFloat(float64(f32), 'f', -1, 32)), nil
-		}
-	case "double":
-		f64, ok := val.(float64)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type float", val)
-		} else {
-			return types.StringValue(strconv.FormatFloat(f64, 'f', -1, 64)), nil
-		}
-	case "string":
-		s, ok := val.(string)
-		if !ok {
-			return types.StringNull(), fmt.Errorf("Type missmatch: %v not of type string", val)
-		} else {
-			return types.StringValue(s), nil
-		}
-	default:
-		return types.StringNull(), fmt.Errorf("Unsupported default value %v", val)
-	}
-}
+
 
 // specToPartitionModels maps an Iceberg PartitionSpec back to Terraform partition models.
 func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) []PartitionModel {
@@ -822,8 +842,6 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 			}
 			if !exists {
 				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
-				fmt.Printf("%%%%%%%%%%%%%%%%\nAddColumn(%v, %v, %v, %v, %v)\n%%%%%%%%%%%%%%",
-							name, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
 			} else {
 				updater.UpdateColumn([]string{name}, itable.ColumnUpdate{
 					FieldType: iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},

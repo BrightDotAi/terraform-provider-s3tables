@@ -12,6 +12,8 @@ description: |-
 ## Example Usage
 
 ```terraform
+# Copyright (c) HashiCorp, Inc.
+
 provider "scaffolding" {
   # example configuration here
 }
@@ -22,4 +24,5 @@ provider "scaffolding" {
 
 ### Optional
 
-- `endpoint` (String) Example provider attribute
+- `profile` (String) AWS IAM Profile. Defaults to the value of the `AWS_PROFILE` environment variable.
+- `region` (String) AWS region. Defaults to the value of the `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables.
