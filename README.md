@@ -36,14 +36,14 @@ catalog.
 ```hcl
 terraform {
   required_providers {
-    brightai = {
+    bai = {
       source  = "BrightDotAi/brightai-s3tables"
       version = "~> 0.1"
     }
   }
 }
 
-provider "brightai" {
+provider "bai" {
   region  = "us-east-1"  # optional — falls back to AWS_REGION / AWS_DEFAULT_REGION
   profile = "my-profile" # optional — falls back to AWS_PROFILE
 }
@@ -60,7 +60,7 @@ The provider uses the standard AWS credential chain: environment variables (`AWS
 
 ## Resources
 
-### `brightai_s3tables_table`
+### `bai_s3tables_table`
 
 Manages an [Apache Iceberg](https://iceberg.apache.org/) table in an S3 Tables bucket via the AWS Glue catalog.
 
@@ -71,7 +71,7 @@ Schema columns and partition fields can be added or removed without destroying a
 #### Example — Basic table
 
 ```hcl
-resource "brightai_s3tables_table" "events" {
+resource "bai_s3tables_table" "events" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -105,7 +105,7 @@ resource "brightai_s3tables_table" "events" {
 #### Example — Table with time-based and identity partitions
 
 ```hcl
-resource "brightai_s3tables_table" "events_partitioned" {
+resource "bai_s3tables_table" "events_partitioned" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -162,7 +162,7 @@ resource "brightai_s3tables_table" "events_partitioned" {
 #### Example — Bucket and truncate partitioning
 
 ```hcl
-resource "brightai_s3tables_table" "metrics" {
+resource "bai_s3tables_table" "metrics" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "monitoring"
@@ -215,7 +215,7 @@ resource "brightai_s3tables_table" "metrics" {
 #### Example — Table with properties
 
 ```hcl
-resource "brightai_s3tables_table" "events" {
+resource "bai_s3tables_table" "events" {
   warehouse = "123456789012:s3tablescatalog/my-table-bucket"
   region    = "us-east-1"
   namespace = "analytics"
@@ -249,6 +249,7 @@ resource "brightai_s3tables_table" "events" {
 | `region` | string | Yes | Yes | AWS region where the table bucket resides (e.g. `us-east-1`). |
 | `namespace` | string | Yes | Yes | Glue database name (namespace) that contains the table. |
 | `name` | string | Yes | Yes | Name of the table. |
+| `format_version` | string | No | Yes | Iceberg format version. Accepted values: `"2"` (default) or `"3"`. Version 3 is required to use column default values. |
 
 **`field` block** (list — columns can be added or removed without recreating the table):
 
@@ -257,7 +258,9 @@ resource "brightai_s3tables_table" "events" {
 | `name` | string | Yes | Column name. |
 | `type` | string | Yes | Iceberg column type (see [Supported Types](#supported-types)). |
 | `required` | bool | No | Whether the column is non-nullable. Defaults to `false`. |
-| `default` | dynamic | No | Default value written for new rows and backfilled for existing rows when the column is added. Supported for `boolean`, `int`, `long`, `float`, `double`, and `string` columns. |
+| `default_string` | string | No | Default string value for `string` columns. At most one `default_*` attribute may be set per field. |
+| `default_number` | number | No | Default numeric value for `int`, `long`, `float`, or `double` columns. At most one `default_*` attribute may be set per field. |
+| `default_bool` | bool | No | Default boolean value for `boolean` columns. At most one `default_*` attribute may be set per field. |
 | `doc` | string | No | Documentation string for the column. Defaults to `""`. |
 
 **`partition` block** (list — partition fields can be added or removed without recreating the table):
@@ -313,7 +316,7 @@ resource "brightai_s3tables_table" "events" {
 Import an existing table using `warehouse,region,namespace,name`:
 
 ```shell
-terraform import brightai_s3tables_table.events \
+terraform import bai_s3tables_table.events \
   "123456789012:s3tablescatalog/my-table-bucket,us-east-1,analytics,events"
 ```
 

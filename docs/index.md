@@ -30,14 +30,14 @@ without causing the table to be destroyed and recreated.
 ```hcl
 terraform {
   required_providers {
-    brightai = {
+    bai = {
       source  = "BrightDotAi/brightai-s3tables"
       version = "~> 0.1"
     }
   }
 }
 
-provider "brightai" {
+provider "bai" {
   region  = "us-east-1"  # optional — falls back to AWS_REGION / AWS_DEFAULT_REGION
   profile = "my-profile" # optional — falls back to AWS_PROFILE
 }

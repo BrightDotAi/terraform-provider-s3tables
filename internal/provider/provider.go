@@ -34,7 +34,7 @@ type BrightAIProviderModel struct {
 }
 
 func (p *BrightAIProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "brightai"
+	resp.TypeName = "bai"
 	resp.Version = p.version
 }
 
