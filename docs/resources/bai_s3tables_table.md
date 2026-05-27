@@ -1,13 +1,14 @@
-# BrightAI Terraform Provider
-
-Terraform provider for managing AWS S3 Tables Iceberg resources via the Glue catalog.
-
-Registry address: `registry.terraform.io/BrightDotAi/brightai-s3tables`
+---
+page_title: "brightai bai_s3tables_table"
+subcategory: ""
+description: |-
+---
+# BrightAI `bai_s3tables_table`
 
 ## Motivation
 
-This provider is intended to provide resources to overcome limitations of the AWS `aws_s3tables_table`
-resource provided by the `aws` and `awscc` providers. Speciffically it will:
+This resource is intended to overcome limitations of the AWS `aws_s3tables_table`
+resources provided by the `aws` and `awscc` providers. Speciffically it will:
 
 - Allow for specificataion of partitions and properties in S3tables table declarations.
 - Allow for import of existing s3tables tables, and for updating/evolving schemas for s3tables tables 
@@ -25,40 +26,7 @@ catalog.
 - Currently default values are supported for types `boolean`, `int`, `long`, `float`, `double` and `string` only. 
 (In addition, adding default values requires use of icebert v3 format.)
 
-## Requirements
 
-- [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.24 (for building from source)
-- AWS credentials configured (environment variables, `~/.aws/credentials`, or IAM role)
-
-## Provider Configuration
-
-```hcl
-terraform {
-  required_providers {
-    bai = {
-      source  = "BrightDotAi/brightai-s3tables"
-      version = "~> 0.1"
-    }
-  }
-}
-
-provider "bai" {
-  region  = "us-east-1"  # optional — falls back to AWS_REGION / AWS_DEFAULT_REGION
-  profile = "my-profile" # optional — falls back to AWS_PROFILE
-}
-```
-
-### Provider Arguments
-
-| Argument | Type | Required | Description |
-|----------|------|----------|-------------|
-| `region` | string | No | AWS region. Defaults to `AWS_REGION` or `AWS_DEFAULT_REGION` environment variables. |
-| `profile` | string | No | AWS named profile from `~/.aws/credentials` or `~/.aws/config`. Defaults to `AWS_PROFILE` environment variable. |
-
-The provider uses the standard AWS credential chain: environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), shared credentials/config file (optionally selecting a named profile with `profile`), EC2/ECS instance profiles, or IAM roles.
-
-## Resources
 
 ### `bai_s3tables_table`
 
@@ -249,7 +217,6 @@ resource "bai_s3tables_table" "events" {
 | `region` | string | Yes | Yes | AWS region where the table bucket resides (e.g. `us-east-1`). |
 | `namespace` | string | Yes | Yes | Glue database name (namespace) that contains the table. |
 | `name` | string | Yes | Yes | Name of the table. |
-| `format_version` | string | No | Yes | Iceberg format version. Accepted values: `"2"` (default) or `"3"`. Version 3 is required to use column default values. |
 
 **`field` block** (list — columns can be added or removed without recreating the table):
 
@@ -258,9 +225,7 @@ resource "bai_s3tables_table" "events" {
 | `name` | string | Yes | Column name. |
 | `type` | string | Yes | Iceberg column type (see [Supported Types](#supported-types)). |
 | `required` | bool | No | Whether the column is non-nullable. Defaults to `false`. |
-| `default_string` | string | No | Default string value for `string` columns. At most one `default_*` attribute may be set per field. |
-| `default_number` | number | No | Default numeric value for `int`, `long`, `float`, or `double` columns. At most one `default_*` attribute may be set per field. |
-| `default_bool` | bool | No | Default boolean value for `boolean` columns. At most one `default_*` attribute may be set per field. |
+| `default` | dynamic | No | Default value written for new rows and backfilled for existing rows when the column is added. Supported for `boolean`, `int`, `long`, `float`, `double`, and `string` columns. |
 | `doc` | string | No | Documentation string for the column. Defaults to `""`. |
 
 **`partition` block** (list — partition fields can be added or removed without recreating the table):
