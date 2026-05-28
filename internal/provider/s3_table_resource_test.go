@@ -4,13 +4,22 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
+	"time"
 
 	iceberg "github.com/apache/iceberg-go"
 	itable "github.com/apache/iceberg-go/table"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/lakeformation"
+	lftypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3tables"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
@@ -740,10 +749,115 @@ func TestCheckPropChanges(t *testing.T) {
 
 // ── acceptance tests ──────────────────────────────────────────────────────────
 
+// testAccSetup loads AWS config, creates a temporary S3Tables bucket and
+// namespace in us-west-2, grants the necessary Lake Formation permissions on
+// both for the current caller, registers cleanup (revoke LF permissions, then
+// delete namespace and bucket), and returns the warehouse identifier, region,
+// and namespace name.
+func testAccSetup(t *testing.T) (warehouse, region, namespace string) {
+	t.Helper()
+	region = "us-west-2"
+	namespace = "test_namespace"
+	ctx := context.Background()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		t.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	stsClient := sts.NewFromConfig(cfg)
+	identity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("failed to get caller identity: %v", err)
+	}
+	accountID := aws.ToString(identity.Account)
+	roleARN := iamRoleARN(aws.ToString(identity.Arn))
+
+	bucketName := fmt.Sprintf("tf-acc-%d", time.Now().UnixNano()%10000000000)
+	warehouse = fmt.Sprintf("%s:s3tablescatalog/%s", accountID, bucketName)
+
+	s3t := s3tables.NewFromConfig(cfg)
+	bucketOut, err := s3t.CreateTableBucket(ctx, &s3tables.CreateTableBucketInput{
+		Name: aws.String(bucketName),
+	})
+	if err != nil {
+		t.Fatalf("failed to create S3Tables bucket %q: %v", bucketName, err)
+	}
+	bucketARN := aws.ToString(bucketOut.Arn)
+
+	_, err = s3t.CreateNamespace(ctx, &s3tables.CreateNamespaceInput{
+		TableBucketARN: aws.String(bucketARN),
+		Namespace:      []string{namespace},
+	})
+	if err != nil {
+		_, _ = s3t.DeleteTableBucket(ctx, &s3tables.DeleteTableBucketInput{TableBucketARN: aws.String(bucketARN)})
+		t.Fatalf("failed to create namespace %q: %v", namespace, err)
+	}
+
+	lfClient := lakeformation.NewFromConfig(cfg)
+	principal := &lftypes.DataLakePrincipal{DataLakePrincipalIdentifier: aws.String(roleARN)}
+	dataLocationResource := &lftypes.Resource{
+		DataLocation: &lftypes.DataLocationResource{
+			CatalogId:   aws.String(accountID),
+			ResourceArn: aws.String(bucketARN),
+		},
+	}
+
+	// Grant DATA_LOCATION_ACCESS on the bucket. The account-level wildcard
+	// registration covers all S3 Tables buckets as managed data locations; a
+	// per-bucket grant within that wildcard gives the role access to all tables
+	// in this bucket without naming individual namespaces or tables.
+	if _, err := lfClient.GrantPermissions(ctx, &lakeformation.GrantPermissionsInput{
+		Principal:   principal,
+		Resource:    dataLocationResource,
+		Permissions: []lftypes.Permission{lftypes.PermissionDataLocationAccess},
+	}); err != nil {
+		_, _ = s3t.DeleteNamespace(ctx, &s3tables.DeleteNamespaceInput{TableBucketARN: aws.String(bucketARN), Namespace: aws.String(namespace)})
+		_, _ = s3t.DeleteTableBucket(ctx, &s3tables.DeleteTableBucketInput{TableBucketARN: aws.String(bucketARN)})
+		t.Fatalf("failed to grant LF data location access on bucket %q: %v", bucketARN, err)
+	}
+
+	t.Cleanup(func() {
+		if _, err := lfClient.RevokePermissions(ctx, &lakeformation.RevokePermissionsInput{
+			Principal:   principal,
+			Resource:    dataLocationResource,
+			Permissions: []lftypes.Permission{lftypes.PermissionDataLocationAccess},
+		}); err != nil {
+			t.Logf("cleanup: failed to revoke LF data location access on bucket %q: %v", bucketARN, err)
+		}
+		if _, err := s3t.DeleteNamespace(ctx, &s3tables.DeleteNamespaceInput{
+			TableBucketARN: aws.String(bucketARN),
+			Namespace:      aws.String(namespace),
+		}); err != nil {
+			t.Logf("cleanup: failed to delete namespace %q: %v", namespace, err)
+		}
+		if _, err := s3t.DeleteTableBucket(ctx, &s3tables.DeleteTableBucketInput{
+			TableBucketARN: aws.String(bucketARN),
+		}); err != nil {
+			t.Logf("cleanup: failed to delete bucket %q: %v", bucketARN, err)
+		}
+	})
+
+	return warehouse, region, namespace
+}
+
+// iamRoleARN converts an STS assumed-role ARN to the underlying IAM role ARN.
+// arn:aws:sts::ACCOUNT:assumed-role/ROLE/SESSION → arn:aws:iam::ACCOUNT:role/ROLE
+// Any other ARN format (IAM user, etc.) is returned unchanged.
+func iamRoleARN(callerARN string) string {
+	const marker = ":assumed-role/"
+	idx := strings.Index(callerARN, marker)
+	if idx < 0 {
+		return callerARN
+	}
+	prefix := strings.Replace(callerARN[:idx], ":sts:", ":iam:", 1)
+	roleName := strings.SplitN(callerARN[idx+len(marker):], "/", 2)[0]
+	return prefix + ":role/" + roleName
+}
+
+
 func TestAccS3TableResource(t *testing.T) {
-	warehouse := "123456789012:s3tablescatalog/test-bucket"
-	region := "us-east-1"
-	namespace := "test_namespace"
+	warehouse, region, namespace := testAccSetup(t)
 	name := "test_table"
 
 	resource.Test(t, resource.TestCase{
@@ -794,9 +908,7 @@ func TestAccS3TableResource(t *testing.T) {
 }
 
 func TestAccS3TableResource_FormatVersion3(t *testing.T) {
-	warehouse := "123456789012:s3tablescatalog/test-bucket"
-	region := "us-east-1"
-	namespace := "test_namespace"
+	warehouse, region, namespace := testAccSetup(t)
 	name := "test_table_v3"
 
 	resource.Test(t, resource.TestCase{
