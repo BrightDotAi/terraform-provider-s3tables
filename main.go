@@ -9,7 +9,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/BrightDotAi/terraform-provider-brightai-s3tables/internal/provider"
+	"github.com/BrightDotAi/terraform-provider-s3tables/internal/provider"
 )
 
 var (

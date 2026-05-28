@@ -1,4 +1,4 @@
-module github.com/BrightDotAi/terraform-provider-brightai-s3tables
+module github.com/BrightDotAi/terraform-provider-s3tables
 
 go 1.25.8
 
