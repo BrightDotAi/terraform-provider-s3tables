@@ -713,8 +713,8 @@ func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 // specToPartitionModels maps an Iceberg PartitionSpec back to Terraform partition models.
 func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) []PartitionModel {
 	var models []PartitionModel
-	for pf := range spec.Fields() {
-		sourceField, ok := schema.FindFieldByID(pf.SourceID)
+	for _, pf := range spec.Fields() {
+		sourceField, ok := schema.FindFieldByID(pf.SourceID())
 		sourceName := ""
 		if ok {
 			sourceName = sourceField.Name
