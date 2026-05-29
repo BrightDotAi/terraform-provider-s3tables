@@ -9,7 +9,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"github.com/BrightDotAi/terraform-provider-brightai-s3tables/internal/provider"
+	"github.com/BrightDotAi/terraform-provider-s3tables/internal/provider"
 )
 
 var (
@@ -31,7 +31,7 @@ func main() {
 		// TODO: Update this string with the published name of your provider.
 		// Also update the tfplugindocs generate command to either remove the
 		// -provider-name flag or set its value to the updated provider name.
-		Address: "registry.terraform.io/BrightDotAi/brightai-s3tables",
+		Address: "registry.terraform.io/BrightDotAi/s3tables",
 		Debug:   debug,
 	}
 

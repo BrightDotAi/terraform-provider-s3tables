@@ -360,7 +360,7 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	txn.Commit(ctx)
+	_, _ = txn.Commit(ctx)
 	// Ignoring errors from Commit because of bug loading reloading meta-data after
 	// commit causes spurious errors.
 	// Instead will refresh table and reload state to confirm updates have been
@@ -473,22 +473,22 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 		return nil, nil
 	}
 	if default_count > 1 {
-		return nil, fmt.Errorf("Multiple default values set for field %s", f.Name)
+		return nil, fmt.Errorf("multiple default values set for field %s", f.Name)
 	}
 
 	switch typ := f.Type.ValueString(); typ {
 	case "boolean":
 		if f.DefaultBool.IsNull() || f.DefaultBool.IsUnknown() {
-			return nil, fmt.Errorf("Non-boolean default set for boolean field %s", f.Name)
+			return nil, fmt.Errorf("non-boolean default set for boolean field %s", f.Name)
 		}
 		return f.DefaultBool.ValueBool(), nil
 	case "int", "long":
 		if f.DefaultNumber.IsNull() || f.DefaultNumber.IsUnknown() {
-			return nil, fmt.Errorf("Non-number default set for integer field %s", f.Name)
+			return nil, fmt.Errorf("non-number default set for integer field %s", f.Name)
 		}
 		i64, acc := f.DefaultNumber.ValueBigFloat().Int64()
 		if acc != 0 {
-			return nil, fmt.Errorf("Non-number default set for integer field %s", f.Name)
+			return nil, fmt.Errorf("non-number default set for integer field %s", f.Name)
 		}
 		if typ == "long" {
 			return i64, nil
@@ -497,7 +497,7 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 		}
 	case "float", "double":
 		if f.DefaultNumber.IsNull() || f.DefaultNumber.IsUnknown() {
-			return nil, fmt.Errorf("Non-number default set for float field %s", f.Name)
+			return nil, fmt.Errorf("non-number default set for float field %s", f.Name)
 		}
 		f64, _ := f.DefaultNumber.ValueBigFloat().Float64()
 		if typ == "double" {
@@ -507,11 +507,11 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 		}
 	case "string":
 		if f.DefaultString.IsNull() || f.DefaultString.IsUnknown() {
-			return nil, fmt.Errorf("Non-string default set for string field %s", f.Name)
+			return nil, fmt.Errorf("non-string default set for string field %s", f.Name)
 		}
 		return f.DefaultString.ValueString(), nil
 	default :
-		return nil, fmt.Errorf("Unsupported default type: %s", typ)
+		return nil, fmt.Errorf("unsupported default type: %s", typ)
 	}
 }
 
@@ -526,47 +526,47 @@ func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
 	case "boolean":
 		b, ok := d.(bool)
 		if !ok {
-			return nil, fmt.Errorf("Non-boolean value %v", d)
+			return nil, fmt.Errorf("non-boolean value %v", d)
 		} else {
 			return iceberg.BoolLiteral(b), nil
 		}
 	case "int":
 		i32, ok := d.(int32)
 		if !ok {
-			return nil, fmt.Errorf("Non-integer value %v", d)
+			return nil, fmt.Errorf("non-integer value %v", d)
 		} else {
 			return iceberg.Int32Literal(i32), nil
 		}
 	case "long":
 		i64, ok := d.(int64)
 		if !ok {
-			return nil, fmt.Errorf("Non-integer value %v", d)
+			return nil, fmt.Errorf("non-integer value %v", d)
 		} else {
 			return iceberg.Int64Literal(i64), nil
 		}
 	case "float":
 		f32, ok := d.(float32)
 		if !ok {
-			return nil, fmt.Errorf("Non-float value %v", d)
+			return nil, fmt.Errorf("non-float value %v", d)
 		} else {
 			return iceberg.Float32Literal(f32), nil
 		}
 	case "double":
 		f64, ok := d.(float64)
 		if !ok {
-			return nil, fmt.Errorf("Non-float value %v", d)
+			return nil, fmt.Errorf("non-float value %v", d)
 		} else {
 			return iceberg.Float64Literal(f64), nil
 		}
 	case "string":
 		s, ok := d.(string)
 		if !ok {
-			return nil, fmt.Errorf("Non-string value %v", d)
+			return nil, fmt.Errorf("non-string value %v", d)
 		} else {
 			return iceberg.StringLiteral(s), nil
 		}
 	default:
-		return nil, fmt.Errorf("Unsupported default value type: %v", d)
+		return nil, fmt.Errorf("unsupported default value type: %v", d)
 	}
 }
 
@@ -631,7 +631,7 @@ func BuildPartitionSpec(partitions []PartitionModel, schema *iceberg.Schema) (*i
 // BuildProperties converts Terraform properties models to Iceberg properties
 func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties, error) {
 	if version != "2" && version != "3" {
-		return nil, fmt.Errorf("Unsupported Iceberg Format Version: %s", version)
+		return nil, fmt.Errorf("unsupported Iceberg Format Version: %s", version)
 	}
 	iproperties := make(iceberg.Properties)
 	for _, prop := range props {
@@ -665,30 +665,30 @@ func  icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
     	switch f.Type.String() {
     	case "boolean":
 			var b bool
-			switch val.(type) {
+			switch v :=val.(type) {
 			case bool:
-				b = val.(bool)
+				b = v
 			default:
-    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type boolean, (type %s)", val, reflect.TypeOf(val))
+    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of type boolean, (type %s)", val, reflect.TypeOf(val))
     		}
 			model.DefaultBool = types.BoolValue(b)
     	case "int", "long", "float", "double":
 			var f64 float64
-			switch val.(type) {
+			switch v := val.(type) {
 			case float64:
-				f64 = val.(float64)
+				f64 = v
 			default:
-    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of numeric type (type %s)", val, reflect.TypeOf(val))
+    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of numeric type (type %s)", val, reflect.TypeOf(val))
     		}
 			model.DefaultNumber = types.NumberValue(big.NewFloat(f64))
     	case "string":
     		s, ok := val.(string)
     		if !ok {
-    			return FieldModel{}, fmt.Errorf("Type missmatch: %v not of type string, (type %s)", val, reflect.TypeOf(val))
+    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of type string, (type %s)", val, reflect.TypeOf(val))
     		}
 			model.DefaultString = types.StringValue(s)
     	default:
-    		return FieldModel{}, fmt.Errorf("Unsupported default value %v", val)
+    		return FieldModel{}, fmt.Errorf("unsupported default value %v", val)
     	}
     }
 	return model, nil
@@ -733,7 +733,7 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 	models := make([]PropertyModel, 0)
 
 	prop_names := make([]string, 0)
-	for name, _ := range props {
+	for name := range props {
 		prop_names = append(prop_names, name)
 	}
 	sort.Strings(prop_names)
@@ -808,7 +808,7 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 		}
 	}
 	if !hasChanges {
-		for name, _ := range current {
+		for name := range current {
 			if _, exists := plan[name]; !exists {
 				hasChanges = true
 				break
@@ -886,7 +886,7 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 		}
 	}
 	if !hasChanges {
-		for name, _ := range current {
+		for name := range current {
 			if _, exists := plan[name]; !exists {
 				hasChanges = true
 				break
@@ -937,16 +937,16 @@ func checkPropChanges(stateProps, planProps []PropertyModel) error {
 
 	// check for changes
 	if len(current) != len(plan) {
-		return fmt.Errorf("Differing properties count: %d vs %d", len(current), len(plan))
+		return fmt.Errorf("differing properties count: %d vs %d", len(current), len(plan))
 	}
 	for name, pp := range plan {
 		if sp, exists := current[name]; !exists || pp != sp {
-			return fmt.Errorf("Differing property: %v", name)
+			return fmt.Errorf("differing property: %v", name)
 		}
 	}
-	for name, _ := range current {
+	for name := range current {
 		if _, exists := plan[name]; !exists {
-			return fmt.Errorf("Missing property: %v", name)
+			return fmt.Errorf("missing property: %v", name)
 		}
 	}
 	return nil

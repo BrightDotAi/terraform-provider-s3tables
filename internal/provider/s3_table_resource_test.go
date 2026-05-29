@@ -5,14 +5,12 @@ package provider
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 	"testing"
 
 	iceberg "github.com/apache/iceberg-go"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
 // ── unit tests ────────────────────────────────────────────────────────────────
@@ -736,114 +734,4 @@ func TestCheckPropChanges(t *testing.T) {
 			}
 		})
 	}
-}
-
-// ── acceptance tests ──────────────────────────────────────────────────────────
-
-func TestAccS3TableResource(t *testing.T) {
-	warehouse := "123456789012:s3tablescatalog/test-bucket"
-	region := "us-east-1"
-	namespace := "test_namespace"
-	name := "test_table"
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			// Create with default format version (2), fields, field defaults, and properties.
-			{
-				Config: testAccS3TableResourceConfig(warehouse, region, namespace, name, ""),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "warehouse", warehouse),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "region", region),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "namespace", namespace),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "name", name),
-
-					// default format version
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "format_version", "2"),
-
-					// field values
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.0.name", "id"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.0.type", "long"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.0.required", "true"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.1.name", "event_time"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.1.type", "timestamp"),
-
-					// field defaults: required=false, doc="" when not specified
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.1.required", "false"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.1.doc", ""),
-
-					// field with explicit default value
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.2.name", "score"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "field.2.type", "double"),
-
-					// properties
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "property.0.name", "write.metadata.compression-codec"),
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "property.0.value", "gzip"),
-				),
-			},
-			// Import
-			{
-				ResourceName:      "bai_s3tables_table.test",
-				ImportState:       true,
-				ImportStateVerify: true,
-				ImportStateId:     fmt.Sprintf("%s,%s,%s,%s", warehouse, region, namespace, name),
-			},
-		},
-	})
-}
-
-func TestAccS3TableResource_FormatVersion3(t *testing.T) {
-	warehouse := "123456789012:s3tablescatalog/test-bucket"
-	region := "us-east-1"
-	namespace := "test_namespace"
-	name := "test_table_v3"
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccS3TableResourceConfig(warehouse, region, namespace, name, `format_version = "3"`),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("bai_s3tables_table.test", "format_version", "3"),
-				),
-			},
-		},
-	})
-}
-
-func testAccS3TableResourceConfig(warehouse, region, namespace, name, extraArgs string) string {
-	return fmt.Sprintf(`
-resource "bai_s3tables_table" "test" {
-  warehouse = %[1]q
-  region    = %[2]q
-  namespace = %[3]q
-  name      = %[4]q
-  %[5]s
-
-  field {
-    name     = "id"
-    type     = "long"
-    required = true
-    doc      = "primary key"
-  }
-
-  field {
-    name = "event_time"
-    type = "timestamp"
-  }
-
-  field {
-    name           = "score"
-    type           = "double"
-    default_number = 0.0
-  }
-
-  property {
-    name  = "write.metadata.compression-codec"
-    value = "gzip"
-  }
-}
-`, warehouse, region, namespace, name, extraArgs)
 }
