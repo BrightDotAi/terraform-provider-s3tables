@@ -798,7 +798,7 @@ func testAccSetup(t *testing.T) (warehouse, region, namespace string) {
 	principal := &lftypes.DataLakePrincipal{DataLakePrincipalIdentifier: aws.String(roleARN)}
 	dataLocationResource := &lftypes.Resource{
 		DataLocation: &lftypes.DataLocationResource{
-			CatalogId:   aws.String(accountID),
+			CatalogId:   aws.String(warehouse),
 			ResourceArn: aws.String(bucketARN),
 		},
 	}
