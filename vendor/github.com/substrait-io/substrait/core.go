@@ -14,10 +14,3 @@ func GetSubstraitFS() embed.FS {
 func GetSubstraitExtensionsFS() embed.FS {
 	return substraitExtensionsFS
 }
-
-//go:embed tests/cases/*/*.test
-var substraitTestsFS embed.FS
-
-func GetSubstraitTestsFS() embed.FS {
-	return substraitTestsFS
-}
