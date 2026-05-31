@@ -18,6 +18,7 @@ builds:
     - '-s -w -X main.version={{.Version}}'
   goos:
     - windows
+    - freebsd
     - linux
     - darwin
   goarch:

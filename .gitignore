@@ -1,5 +1,6 @@
 *.dll
 *.exe
+terraform-provider-s3tables
 .DS_Store
 example.tf
 terraform.tfplan
@@ -8,10 +9,6 @@ bin/
 dist/
 modules-dev/
 /pkg/
-website/.vagrant
-website/.bundle
-website/build
-website/node_modules
 .vagrant/
 *.backup
 ./*.tfstate
@@ -23,10 +20,3 @@ website/node_modules
 .idea
 *.iml
 *.test
-
-website/vendor
-
-# Test exclusions
-!command/test-fixtures/**/*.tfstate
-!command/test-fixtures/**/.terraform/
-
