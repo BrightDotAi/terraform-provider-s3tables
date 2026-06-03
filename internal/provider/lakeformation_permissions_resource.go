@@ -378,36 +378,40 @@ func (r *LakeFormationPermissionsResource) Read(ctx context.Context, req resourc
 	}
 
 	for i, db := range data.Catalog.Database {
-		p, g, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
-			Database: &lftypes.DatabaseResource{
-				CatalogId: aws.String(catalogID),
-				Name:      aws.String(db.Name.ValueString()),
-			},
-		})
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to read database permissions", err.Error())
-			return
-		}
-		data.Catalog.Database[i].Permissions = refreshPerms(db.Permissions, p)
-		data.Catalog.Database[i].GrantablePermissions = refreshPerms(db.GrantablePermissions, g)
-
-		for j, tbl := range db.Table {
-			tp, tg, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
-				Table: &lftypes.TableResource{
-					CatalogId:    aws.String(catalogID),
-					DatabaseName: aws.String(db.Name.ValueString()),
-					Name:         aws.String(tbl.Name.ValueString()),
+		if db.Permissions != nil || db.GrantablePermissions != nil {
+			p, g, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
+				Database: &lftypes.DatabaseResource{
+					CatalogId: aws.String(catalogID),
+					Name:      aws.String(db.Name.ValueString()),
 				},
 			})
 			if err != nil {
-				resp.Diagnostics.AddError("Failed to read table permissions", err.Error())
+				resp.Diagnostics.AddError("Failed to read database permissions", err.Error())
 				return
 			}
-			data.Catalog.Database[i].Table[j].Permissions = refreshPerms(tbl.Permissions, tp)
-			data.Catalog.Database[i].Table[j].GrantablePermissions = refreshPerms(tbl.GrantablePermissions, tg)
+			data.Catalog.Database[i].Permissions = refreshPerms(db.Permissions, p)
+			data.Catalog.Database[i].GrantablePermissions = refreshPerms(db.GrantablePermissions, g)
 		}
 
-		if db.Wildcard != nil {
+		for j, tbl := range db.Table {
+			if tbl.Permissions != nil || tbl.GrantablePermissions != nil {
+				tp, tg, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
+					Table: &lftypes.TableResource{
+						CatalogId:    aws.String(catalogID),
+						DatabaseName: aws.String(db.Name.ValueString()),
+						Name:         aws.String(tbl.Name.ValueString()),
+					},
+				})
+				if err != nil {
+					resp.Diagnostics.AddError("Failed to read table permissions", err.Error())
+					return
+				}
+				data.Catalog.Database[i].Table[j].Permissions = refreshPerms(tbl.Permissions, tp)
+				data.Catalog.Database[i].Table[j].GrantablePermissions = refreshPerms(tbl.GrantablePermissions, tg)
+			}
+		}
+
+		if db.Wildcard != nil && (db.Wildcard.Permissions != nil || db.Wildcard.GrantablePermissions != nil) {
 			wp, wg, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
 				Table: &lftypes.TableResource{
 					CatalogId:     aws.String(catalogID),
