@@ -4,13 +4,17 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"math/big"
+	"net/http"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
-	"sort"
-	"math/big"
-	"reflect"
 
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -426,14 +430,87 @@ func (r *S3TableResource) ImportState(ctx context.Context, req resource.ImportSt
 
 
 // GetCatalog -  connect to catalog using glue RESTful endpoint
-func (data *S3TableResourceModel) GetCatalog(ctx context.Context, awsCfg aws.Config) (*rest.Catalog, error){
+func (data *S3TableResourceModel) GetCatalog(ctx context.Context, awsCfg aws.Config) (*rest.Catalog, error) {
 	cat, err := rest.NewCatalog(ctx, "s3tables_catalog",
-						   ("https://glue." + data.Region.ValueString() + ".amazonaws.com/iceberg"),
-						   rest.WithAwsConfig(awsCfg),
-						   rest.WithWarehouseLocation(data.Warehouse.ValueString()),
-						   rest.WithSigV4(),
-						   rest.WithSigV4RegionSvc(data.Region.ValueString(), "glue"))
+		"https://glue."+data.Region.ValueString()+".amazonaws.com/iceberg",
+		rest.WithAwsConfig(awsCfg),
+		rest.WithWarehouseLocation(data.Warehouse.ValueString()),
+		rest.WithSigV4(),
+		rest.WithSigV4RegionSvc(data.Region.ValueString(), "glue"),
+		rest.WithCustomTransport(&metadataPatchTransport{base: http.DefaultTransport}),
+	)
 	return cat, err
+}
+
+// metadataPatchTransport strips v3-only fields (specifically "next-row-id")
+// from v1/v2 Iceberg table metadata returned by S3 Tables. S3 Tables includes
+// this field even in format-version:2 responses; iceberg-go v0.6.0 rejects it.
+type metadataPatchTransport struct {
+	base http.RoundTripper
+}
+
+func (t *metadataPatchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return resp, err
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return resp, err
+	}
+
+	patched := stripV3FieldsFromV2Metadata(body)
+	resp.Body = io.NopCloser(bytes.NewReader(patched))
+	resp.ContentLength = int64(len(patched))
+	return resp, nil
+}
+
+// stripV3FieldsFromV2Metadata removes "next-row-id" from the nested
+// "metadata" object when format-version < 3. Returns data unchanged if the
+// body does not match the expected shape or no patch is needed.
+func stripV3FieldsFromV2Metadata(data []byte) []byte {
+	var outer struct {
+		Metadata json.RawMessage `json:"metadata"`
+	}
+	if json.Unmarshal(data, &outer) != nil || len(outer.Metadata) == 0 {
+		return data
+	}
+
+	var ver struct {
+		FormatVersion int `json:"format-version"`
+	}
+	if json.Unmarshal(outer.Metadata, &ver) != nil || ver.FormatVersion >= 3 {
+		return data
+	}
+
+	var metaMap map[string]json.RawMessage
+	if json.Unmarshal(outer.Metadata, &metaMap) != nil {
+		return data
+	}
+	if _, ok := metaMap["next-row-id"]; !ok {
+		return data
+	}
+
+	delete(metaMap, "next-row-id")
+
+	patchedMeta, err := json.Marshal(metaMap)
+	if err != nil {
+		return data
+	}
+
+	var outerMap map[string]json.RawMessage
+	if json.Unmarshal(data, &outerMap) != nil {
+		return data
+	}
+	outerMap["metadata"] = patchedMeta
+
+	result, err := json.Marshal(outerMap)
+	if err != nil {
+		return data
+	}
+	return result
 }
 
 // GetIdentifier - get Identifier from table model
@@ -643,7 +720,9 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 			iproperties[name] = val
 		}
 	}
-	iproperties["format-version"] = version
+	if version == "3" {
+		iproperties["format-version"] = version
+	}
 	return &iproperties, nil
 }
 

@@ -23,6 +23,7 @@ import (
 
 var _ resource.Resource = &LakeFormationPermissionsResource{}
 var _ resource.ResourceWithConfigValidators = &LakeFormationPermissionsResource{}
+var _ resource.ResourceWithImportState = &LakeFormationPermissionsResource{}
 
 // lfClientIface is the subset of the LF client API used by this resource.
 // *lakeformation.Client satisfies it; tests substitute a mock.
@@ -464,6 +465,22 @@ func (r *LakeFormationPermissionsResource) Delete(ctx context.Context, req resou
 	if err := revokeForUpdate(ctx, client, &data, &data); err != nil {
 		resp.Diagnostics.AddError("Failed to revoke Lake Formation permissions", err.Error())
 	}
+}
+
+// ImportState accepts: <principal_arn>,<region>,<catalog_id>
+// where catalog_id has the form <account_id>:s3tablescatalog/<bucket_name>.
+func (r *LakeFormationPermissionsResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	parts := strings.SplitN(req.ID, ",", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Expected format principal_arn,region,catalog_id, got: %q", req.ID),
+		)
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("principal"), parts[0])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("region"), parts[1])...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("catalog").AtName("id"), parts[2])...)
 }
 
 // --- Helpers ---
