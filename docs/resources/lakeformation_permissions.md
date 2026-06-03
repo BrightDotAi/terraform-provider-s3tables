@@ -46,12 +46,12 @@ Required:
 
 Optional:
 
-- `grantable_permissions` (Attributes) Database-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--databases--grantable_permissions))
-- `permissions` (Attributes) Database-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--databases--permissions))
-- `table` (Block List) Named table permissions. Mutually exclusive with `wildcard`. (see [below for nested schema](#nestedblock--catalog--database--tables))
+- `grantable_permissions` (Attributes) Database-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--database--grantable_permissions))
+- `permissions` (Attributes) Database-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--database--permissions))
+- `table` (Block List) Named table permissions. Mutually exclusive with `wildcard`. (see [below for nested schema](#nestedblock--catalog--database--table))
 - `wildcard` (Block, Optional) Permissions on all tables in this database. Mutually exclusive with `table`. (see [below for nested schema](#nestedblock--catalog--database--wildcard))
 
-<a id="nestedatt--catalog--databases--grantable_permissions"></a>
+<a id="nestedatt--catalog--database--grantable_permissions"></a>
 ### Nested Schema for `catalog.database.grantable_permissions`
 
 Optional:
@@ -63,7 +63,7 @@ Optional:
 - `drop` (Boolean) Grants DROP on the database.
 
 
-<a id="nestedatt--catalog--databases--permissions"></a>
+<a id="nestedatt--catalog--database--permissions"></a>
 ### Nested Schema for `catalog.database.permissions`
 
 Optional:
@@ -75,7 +75,7 @@ Optional:
 - `drop` (Boolean) Grants DROP on the database.
 
 
-<a id="nestedblock--catalog--database--tables"></a>
+<a id="nestedblock--catalog--database--table"></a>
 ### Nested Schema for `catalog.database.table`
 
 Required:
@@ -84,10 +84,10 @@ Required:
 
 Optional:
 
-- `grantable_permissions` (Attributes) Table-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--databases--tables--grantable_permissions))
-- `permissions` (Attributes) Table-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--databases--tables--permissions))
+- `grantable_permissions` (Attributes) Table-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--database--table--grantable_permissions))
+- `permissions` (Attributes) Table-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--database--table--permissions))
 
-<a id="nestedatt--catalog--databases--tables--grantable_permissions"></a>
+<a id="nestedatt--catalog--database--table--grantable_permissions"></a>
 ### Nested Schema for `catalog.database.table.grantable_permissions`
 
 Optional:
@@ -101,7 +101,7 @@ Optional:
 - `select` (Boolean) Grants SELECT on the table.
 
 
-<a id="nestedatt--catalog--databases--tables--permissions"></a>
+<a id="nestedatt--catalog--database--table--permissions"></a>
 ### Nested Schema for `catalog.database.table.permissions`
 
 Optional:
@@ -121,11 +121,11 @@ Optional:
 
 Optional:
 
-- `grantable_permissions` (Attributes) Table-level permissions the principal can grant to others on all tables. (see [below for nested schema](#nestedatt--catalog--databases--wildcard--grantable_permissions))
+- `grantable_permissions` (Attributes) Table-level permissions the principal can grant to others on all tables. (see [below for nested schema](#nestedatt--catalog--database--wildcard--grantable_permissions))
 - `name` (String) Must be omitted or empty; present only for struct compatibility with named table entries.
-- `permissions` (Attributes) Table-level permissions to grant on all tables. (see [below for nested schema](#nestedatt--catalog--databases--wildcard--permissions))
+- `permissions` (Attributes) Table-level permissions to grant on all tables. (see [below for nested schema](#nestedatt--catalog--database--wildcard--permissions))
 
-<a id="nestedatt--catalog--databases--wildcard--grantable_permissions"></a>
+<a id="nestedatt--catalog--database--wildcard--grantable_permissions"></a>
 ### Nested Schema for `catalog.database.wildcard.grantable_permissions`
 
 Optional:
@@ -139,7 +139,7 @@ Optional:
 - `select` (Boolean) Grants SELECT on the table.
 
 
-<a id="nestedatt--catalog--databases--wildcard--permissions"></a>
+<a id="nestedatt--catalog--database--wildcard--permissions"></a>
 ### Nested Schema for `catalog.database.wildcard.permissions`
 
 Optional:
