@@ -246,7 +246,9 @@ func TestTablePermsToAPI(t *testing.T) {
 // ── refreshPerms ─────────────────────────────────────────────────────────────
 
 func TestRefreshPerms(t *testing.T) {
-	// refreshBool always emits explicit true/false; zero-value types.Bool (null) must not appear.
+	// refreshBool returns null (not false) for undeclared fields so that state
+	// agrees with the plan value produced by clearBoolIfUnset (cty: false ≠ null).
+	// Only fields declared true but revoked externally emit explicit false.
 	f := types.BoolValue(false)
 
 	t.Run("catalog", func(t *testing.T) {
@@ -258,7 +260,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("declared_perm_present_in_current", func(t *testing.T) {
 			got := refreshPerms(&CatalogPermissions{CreateDatabase: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionCreateDatabase})
-			want := &CatalogPermissions{Alter: f, CreateCatalog: f, CreateDatabase: types.BoolValue(true), Describe: f, Drop: f}
+			want := &CatalogPermissions{CreateDatabase: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -266,7 +268,9 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("declared_perm_absent_becomes_false", func(t *testing.T) {
 			got := refreshPerms(&CatalogPermissions{CreateDatabase: types.BoolValue(true), Describe: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionCreateDatabase})
-			want := &CatalogPermissions{Alter: f, CreateCatalog: f, CreateDatabase: types.BoolValue(true), Describe: f, Drop: f}
+			// Describe was declared true but is absent from current → explicit false.
+			// Undeclared fields (Alter, CreateCatalog, Drop) → null (zero value).
+			want := &CatalogPermissions{CreateDatabase: types.BoolValue(true), Describe: f}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -274,15 +278,16 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("ALL_sets_all_declared_true", func(t *testing.T) {
 			got := refreshPerms(&CatalogPermissions{Alter: types.BoolValue(true), CreateDatabase: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionAll})
-			want := &CatalogPermissions{Alter: types.BoolValue(true), CreateCatalog: f, CreateDatabase: types.BoolValue(true), Describe: f, Drop: f}
+			want := &CatalogPermissions{Alter: types.BoolValue(true), CreateDatabase: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
 		})
 		t.Run("undeclared_perms_not_tracked", func(t *testing.T) {
+			// All fields null in declared → all returned as null regardless of current.
 			got := refreshPerms(&CatalogPermissions{},
 				[]lftypes.Permission{lftypes.PermissionCreateDatabase, lftypes.PermissionDescribe})
-			want := &CatalogPermissions{Alter: f, CreateCatalog: f, CreateDatabase: f, Describe: f, Drop: f}
+			want := &CatalogPermissions{}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -298,7 +303,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("describe_present", func(t *testing.T) {
 			got := refreshPerms(&DatabasePermissions{Describe: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionDescribe})
-			want := &DatabasePermissions{Alter: f, CreateTable: f, Describe: types.BoolValue(true), Drop: f}
+			want := &DatabasePermissions{Describe: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -306,7 +311,8 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("perm_revoked_externally", func(t *testing.T) {
 			got := refreshPerms(&DatabasePermissions{CreateTable: types.BoolValue(true), Alter: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionAlter})
-			want := &DatabasePermissions{Alter: types.BoolValue(true), CreateTable: f, Describe: f, Drop: f}
+			// CreateTable declared true but absent → explicit false. Undeclared → null.
+			want := &DatabasePermissions{Alter: types.BoolValue(true), CreateTable: f}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -314,7 +320,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("ALL_expands_to_declared", func(t *testing.T) {
 			got := refreshPerms(&DatabasePermissions{Alter: types.BoolValue(true), Drop: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionAll})
-			want := &DatabasePermissions{Alter: types.BoolValue(true), CreateTable: f, Describe: f, Drop: types.BoolValue(true)}
+			want := &DatabasePermissions{Alter: types.BoolValue(true), Drop: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -330,7 +336,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("select_and_describe_present", func(t *testing.T) {
 			got := refreshPerms(&TablePermissions{Select: types.BoolValue(true), Describe: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionSelect, lftypes.PermissionDescribe})
-			want := &TablePermissions{Alter: f, Delete: f, Describe: types.BoolValue(true), Drop: f, Insert: f, Select: types.BoolValue(true)}
+			want := &TablePermissions{Describe: types.BoolValue(true), Select: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -338,7 +344,8 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("perm_revoked_externally", func(t *testing.T) {
 			got := refreshPerms(&TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionSelect})
-			want := &TablePermissions{Alter: f, Delete: f, Describe: f, Drop: f, Insert: f, Select: types.BoolValue(true)}
+			// Insert declared true but absent → explicit false. Undeclared → null.
+			want := &TablePermissions{Insert: f, Select: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -346,7 +353,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("ALL_expands_to_declared", func(t *testing.T) {
 			got := refreshPerms(&TablePermissions{Select: types.BoolValue(true), Delete: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionAll})
-			want := &TablePermissions{Alter: f, Delete: types.BoolValue(true), Describe: f, Drop: f, Insert: f, Select: types.BoolValue(true)}
+			want := &TablePermissions{Delete: types.BoolValue(true), Select: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -354,7 +361,7 @@ func TestRefreshPerms(t *testing.T) {
 		t.Run("undeclared_perm_in_current_not_tracked", func(t *testing.T) {
 			got := refreshPerms(&TablePermissions{Select: types.BoolValue(true)},
 				[]lftypes.Permission{lftypes.PermissionSelect, lftypes.PermissionInsert})
-			want := &TablePermissions{Alter: f, Delete: f, Describe: f, Drop: f, Insert: f, Select: types.BoolValue(true)}
+			want := &TablePermissions{Select: types.BoolValue(true)}
 			if *got != *want {
 				t.Errorf("got %+v, want %+v", got, want)
 			}
@@ -362,88 +369,272 @@ func TestRefreshPerms(t *testing.T) {
 	})
 }
 
-// ── expandAllPerms ────────────────────────────────────────────────────────────
+// ── refreshBool ───────────────────────────────────────────────────────────────
 
-func TestExpandAllPerms(t *testing.T) {
-	t.Run("catalog", func(t *testing.T) {
-		t.Run("nil_passthrough", func(t *testing.T) {
-			if expandAllPerms[CatalogPermissions](nil) != nil {
-				t.Error("expected nil")
+func TestRefreshBool(t *testing.T) {
+	granted := map[lftypes.Permission]bool{lftypes.PermissionSelect: true}
+
+	tests := []struct {
+		name     string
+		declared types.Bool
+		perm     lftypes.Permission
+		current  map[lftypes.Permission]bool
+		hasAll   bool
+		want     types.Bool
+	}{
+		// Undeclared (null) → always null, even when the permission is present in AWS.
+		// This is the key invariant: undeclared fields must never diverge from the plan
+		// value produced by clearBoolIfUnset, which also yields null for unconfigured bools.
+		{
+			name: "undeclared_perm_absent_returns_null",
+			declared: types.BoolNull(), perm: lftypes.PermissionInsert,
+			current: granted, hasAll: false, want: types.BoolNull(),
+		},
+		{
+			name: "undeclared_perm_present_in_aws_returns_null",
+			declared: types.BoolNull(), perm: lftypes.PermissionSelect,
+			current: granted, hasAll: false, want: types.BoolNull(),
+		},
+		{
+			name: "undeclared_with_all_in_aws_returns_null",
+			declared: types.BoolNull(), perm: lftypes.PermissionSelect,
+			current: granted, hasAll: true, want: types.BoolNull(),
+		},
+		// Declared false is semantically the same as null: not managed → null in state.
+		{
+			name: "declared_false_perm_absent_returns_null",
+			declared: types.BoolValue(false), perm: lftypes.PermissionInsert,
+			current: granted, hasAll: false, want: types.BoolNull(),
+		},
+		{
+			name: "declared_false_perm_present_returns_null",
+			declared: types.BoolValue(false), perm: lftypes.PermissionSelect,
+			current: granted, hasAll: false, want: types.BoolNull(),
+		},
+		// Declared true → reflect actual AWS state.
+		{
+			name: "declared_true_perm_present_returns_true",
+			declared: types.BoolValue(true), perm: lftypes.PermissionSelect,
+			current: granted, hasAll: false, want: types.BoolValue(true),
+		},
+		{
+			name: "declared_true_perm_absent_returns_false",
+			declared: types.BoolValue(true), perm: lftypes.PermissionInsert,
+			current: granted, hasAll: false, want: types.BoolValue(false),
+		},
+		{
+			name: "declared_true_all_in_aws_returns_true",
+			declared: types.BoolValue(true), perm: lftypes.PermissionInsert,
+			current: granted, hasAll: true, want: types.BoolValue(true),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := refreshBool(tt.declared, tt.perm, tt.current, tt.hasAll)
+			if got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
-		t.Run("all_false_passthrough", func(t *testing.T) {
-			p := &CatalogPermissions{Describe: types.BoolValue(true)}
-			if expandAllPerms(p) != p {
-				t.Error("expected same pointer when all=false")
-			}
-		})
-		t.Run("all_true_expands_flags", func(t *testing.T) {
-			got := expandAllPerms(&CatalogPermissions{All: types.BoolValue(true)})
-			if got == nil {
-				t.Fatal("expected non-nil")
-			}
-			if !got.Alter.ValueBool() || !got.CreateCatalog.ValueBool() ||
-				!got.CreateDatabase.ValueBool() || !got.Describe.ValueBool() || !got.Drop.ValueBool() {
-				t.Errorf("expected all individual flags true, got %+v", got)
-			}
-			if got.All.ValueBool() {
-				t.Error("All should be null/false after expansion")
-			}
-		})
+	}
+}
+
+// ── no-drift guarantees ───────────────────────────────────────────────────────
+
+// TestNoDriftForOmittedPermissions verifies the core invariant: Terraform should
+// not plan an Update when external actors change permissions that are not declared
+// in the resource config (either because the whole block is absent, or because
+// individual flags within a declared block are not configured).
+//
+// The mechanism: Read calls refreshPerms, which calls refreshBool. Both must
+// produce values that agree with what the config puts into the plan — otherwise
+// cty sees false ≠ null and triggers a phantom diff on every plan.
+func TestNoDriftForOmittedPermissions(t *testing.T) {
+	anyPerms := []lftypes.Permission{lftypes.PermissionSelect, lftypes.PermissionDescribe}
+
+	// Nil permissions block (block omitted in config) → refreshPerms returns nil.
+	// plan: nil (Optional attr not set) == state: nil → no diff → no Update.
+	t.Run("nil_catalog_permissions_block_returns_nil", func(t *testing.T) {
+		if got := refreshPerms[CatalogPermissions](nil, anyPerms); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+	t.Run("nil_database_permissions_block_returns_nil", func(t *testing.T) {
+		if got := refreshPerms[DatabasePermissions](nil, anyPerms); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+	t.Run("nil_table_permissions_block_returns_nil", func(t *testing.T) {
+		if got := refreshPerms[TablePermissions](nil, anyPerms); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+	t.Run("nil_grantable_permissions_block_returns_nil", func(t *testing.T) {
+		// Same nil semantics apply to grantable_permissions.
+		if got := refreshPerms[CatalogPermissions](nil, anyPerms); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
 	})
 
-	t.Run("database", func(t *testing.T) {
-		t.Run("nil_passthrough", func(t *testing.T) {
-			if expandAllPerms[DatabasePermissions](nil) != nil {
-				t.Error("expected nil")
-			}
-		})
-		t.Run("all_false_passthrough", func(t *testing.T) {
-			p := &DatabasePermissions{Describe: types.BoolValue(true)}
-			if expandAllPerms(p) != p {
-				t.Error("expected same pointer when all=false")
-			}
-		})
-		t.Run("all_true_expands_flags", func(t *testing.T) {
-			got := expandAllPerms(&DatabasePermissions{All: types.BoolValue(true)})
-			if got == nil {
-				t.Fatal("expected non-nil")
-			}
-			if !got.Alter.ValueBool() || !got.CreateTable.ValueBool() ||
-				!got.Describe.ValueBool() || !got.Drop.ValueBool() {
-				t.Errorf("expected all individual flags true, got %+v", got)
-			}
-			if got.All.ValueBool() {
-				t.Error("All should be null/false after expansion")
-			}
-		})
+	// Undeclared flag within a present permissions block → null in state.
+	// plan: null (Optional attr not configured) == state: null → no diff for that flag.
+	t.Run("undeclared_flag_is_null_in_state_even_when_granted_in_aws", func(t *testing.T) {
+		// permissions { select = true } — ALTER not declared.
+		// AWS externally grants ALTER. State must not track it.
+		got := refreshPerms(
+			&TablePermissions{Select: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionSelect, lftypes.PermissionAlter},
+		)
+		if !got.Alter.IsNull() {
+			t.Errorf("undeclared Alter: want null in state, got %v", got.Alter)
+		}
+		if got.Select != types.BoolValue(true) {
+			t.Errorf("declared Select: want true, got %v", got.Select)
+		}
+	})
+	t.Run("undeclared_database_flag_is_null_in_state", func(t *testing.T) {
+		// permissions { describe = true } — CREATE_TABLE not declared.
+		got := refreshPerms(
+			&DatabasePermissions{Describe: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionDescribe, lftypes.PermissionCreateTable},
+		)
+		if !got.CreateTable.IsNull() {
+			t.Errorf("undeclared CreateTable: want null, got %v", got.CreateTable)
+		}
 	})
 
-	t.Run("table", func(t *testing.T) {
-		t.Run("nil_passthrough", func(t *testing.T) {
-			if expandAllPerms[TablePermissions](nil) != nil {
-				t.Error("expected nil")
-			}
-		})
-		t.Run("all_false_passthrough", func(t *testing.T) {
-			p := &TablePermissions{Select: types.BoolValue(true)}
-			if expandAllPerms(p) != p {
-				t.Error("expected same pointer when all=false")
-			}
-		})
-		t.Run("all_true_expands_flags", func(t *testing.T) {
-			got := expandAllPerms(&TablePermissions{All: types.BoolValue(true)})
-			if got == nil {
-				t.Fatal("expected non-nil")
-			}
-			if !got.Alter.ValueBool() || !got.Delete.ValueBool() || !got.Describe.ValueBool() ||
-				!got.Drop.ValueBool() || !got.Insert.ValueBool() || !got.Select.ValueBool() {
-				t.Errorf("expected all individual flags true, got %+v", got)
-			}
-			if got.All.ValueBool() {
-				t.Error("All should be null/false after expansion")
-			}
-		})
+	// Declared permission still granted → true in state == true in plan → no diff.
+	t.Run("declared_perm_present_no_drift", func(t *testing.T) {
+		got := refreshPerms(
+			&TablePermissions{Select: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionSelect},
+		)
+		if got.Select != types.BoolValue(true) {
+			t.Errorf("declared Select still granted: want true, got %v", got.Select)
+		}
+	})
+
+	// Declared permission externally revoked → false in state ≠ true in plan → Update.
+	t.Run("declared_perm_revoked_triggers_drift", func(t *testing.T) {
+		got := refreshPerms(
+			&TablePermissions{Select: types.BoolValue(true)},
+			[]lftypes.Permission{}, // SELECT absent
+		)
+		if got.Select != types.BoolValue(false) {
+			t.Errorf("declared Select externally revoked: want false (drift signal), got %v", got.Select)
+		}
+	})
+	t.Run("declared_catalog_perm_revoked_triggers_drift", func(t *testing.T) {
+		got := refreshPerms(
+			&CatalogPermissions{CreateDatabase: types.BoolValue(true)},
+			[]lftypes.Permission{}, // CREATE_DATABASE absent
+		)
+		if got.CreateDatabase != types.BoolValue(false) {
+			t.Errorf("declared CreateDatabase revoked: want false, got %v", got.CreateDatabase)
+		}
+	})
+
+	// ALL in AWS covers all declared permissions — no drift even if declared via individual flags.
+	t.Run("all_in_aws_satisfies_individual_declared_flags", func(t *testing.T) {
+		got := refreshPerms(
+			&TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionAll},
+		)
+		if got.Select != types.BoolValue(true) {
+			t.Errorf("Select covered by ALL: want true, got %v", got.Select)
+		}
+		if got.Insert != types.BoolValue(true) {
+			t.Errorf("Insert covered by ALL: want true, got %v", got.Insert)
+		}
+		if !got.Alter.IsNull() {
+			t.Errorf("undeclared Alter: want null even when ALL granted, got %v", got.Alter)
+		}
+	})
+}
+
+// ── all=true shorthand ────────────────────────────────────────────────────────
+
+// TestAllShorthand verifies that all=true in a permissions block:
+//  1. Sends [ALL] to the AWS API via the *PermsToAPI functions.
+//  2. Is persisted to state as-is (no plan-time expansion).
+//  3. Is refreshed correctly: stays true when ALL is still granted, becomes
+//     false when ALL is revoked externally (triggering an Update to re-grant).
+func TestAllShorthand(t *testing.T) {
+	t.Run("catalog_all_true_sends_ALL_to_api", func(t *testing.T) {
+		got := catalogPermsToAPI(&CatalogPermissions{All: types.BoolValue(true)})
+		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
+			t.Errorf("catalogPermsToAPI all=true = %v, want [ALL]", got)
+		}
+	})
+	t.Run("database_all_true_sends_ALL_to_api", func(t *testing.T) {
+		got := databasePermsToAPI(&DatabasePermissions{All: types.BoolValue(true)})
+		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
+			t.Errorf("databasePermsToAPI all=true = %v, want [ALL]", got)
+		}
+	})
+	t.Run("table_all_true_sends_ALL_to_api", func(t *testing.T) {
+		got := tablePermsToAPI(&TablePermissions{All: types.BoolValue(true)})
+		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
+			t.Errorf("tablePermsToAPI all=true = %v, want [ALL]", got)
+		}
+	})
+
+	// all=true persists in state and is refreshed via the same tfsdk-tag→permission
+	// mechanism as individual flags ("all" uppercases to "ALL").
+	t.Run("all_true_refreshed_stays_true_when_ALL_active", func(t *testing.T) {
+		got := refreshPerms(
+			&CatalogPermissions{All: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionAll},
+		)
+		if got.All != types.BoolValue(true) {
+			t.Errorf("all=true with ALL in AWS: want true, got %v", got.All)
+		}
+	})
+	t.Run("all_true_refreshed_becomes_false_when_ALL_revoked", func(t *testing.T) {
+		// ALL was externally revoked. State flips to false → plan still has all=true →
+		// Terraform detects drift and triggers an Update to re-grant ALL.
+		got := refreshPerms(
+			&CatalogPermissions{All: types.BoolValue(true)},
+			[]lftypes.Permission{},
+		)
+		if got.All != types.BoolValue(false) {
+			t.Errorf("all=true with ALL revoked: want false (drift signal), got %v", got.All)
+		}
+	})
+	t.Run("all_true_individual_flags_remain_null_in_state", func(t *testing.T) {
+		// When all=true, individual flags are not declared by the user and must
+		// stay null in state so they don't produce phantom plan diffs.
+		got := refreshPerms(
+			&TablePermissions{All: types.BoolValue(true)},
+			[]lftypes.Permission{lftypes.PermissionAll},
+		)
+		if !got.Select.IsNull() || !got.Alter.IsNull() || !got.Insert.IsNull() {
+			t.Errorf("undeclared individual flags must be null when all=true is used; got %+v", got)
+		}
+	})
+
+	// grantAll must send ALL when all=true is set.
+	t.Run("grantAll_with_all_true_sends_ALL", func(t *testing.T) {
+		const principal = "arn:aws:iam::123456789012:role/TestRole"
+		mock := &mockLFClient{}
+		data := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Region:    types.StringValue("us-east-1"),
+			Catalog: &CatalogPermModel{
+				ID:          types.StringValue("123456789012"),
+				Permissions: &CatalogPermissions{All: types.BoolValue(true)},
+			},
+		}
+		if err := grantAll(context.Background(), mock, data); err != nil {
+			t.Fatalf("grantAll error: %v", err)
+		}
+		call := findGrantCall(mock.grantCalls, isCatalogResource)
+		if call == nil {
+			t.Fatal("expected GrantPermissions call")
+		}
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionAll}) {
+			t.Errorf("permissions = %v, want [ALL]", call.Permissions)
+		}
 	})
 }
 
@@ -536,7 +727,7 @@ func TestGrantAll(t *testing.T) {
 			Region:    types.StringValue("us-east-1"),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
 						Permissions: &DatabasePermissions{
@@ -572,10 +763,10 @@ func TestGrantAll(t *testing.T) {
 			Region:    types.StringValue("us-east-1"),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name: types.StringValue("events"),
 								Permissions: &TablePermissions{
@@ -622,7 +813,7 @@ func TestGrantAll(t *testing.T) {
 			Region:    types.StringValue("us-east-1"),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
 						Wildcard: &TablePermModel{
@@ -662,10 +853,10 @@ func TestGrantAll(t *testing.T) {
 			Region:    types.StringValue("us-east-1"),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("db"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name: types.StringValue("tbl"),
 								Permissions: &TablePermissions{
@@ -753,7 +944,7 @@ func TestDelete(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("analytics"), Permissions: &DatabasePermissions{Describe: types.BoolValue(true)}},
 				},
 			},
@@ -776,7 +967,7 @@ func TestDelete(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("analytics")}, // Permissions nil
 				},
 			},
@@ -795,10 +986,10 @@ func TestDelete(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name:        types.StringValue("events"),
 								Permissions: &TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)},
@@ -826,7 +1017,7 @@ func TestDelete(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:     types.StringValue("raw"),
 						Wildcard: &TablePermModel{Permissions: &TablePermissions{Select: types.BoolValue(true)}},
@@ -856,10 +1047,10 @@ func TestDelete(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name:                 types.StringValue("events"),
 								GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
@@ -988,7 +1179,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:        types.StringValue("analytics"),
 						Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
@@ -1000,7 +1191,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
 						// Permissions nil
@@ -1022,7 +1213,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:        types.StringValue("analytics"),
 						Permissions: &DatabasePermissions{CreateTable: types.BoolValue(true)},
@@ -1034,7 +1225,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:        types.StringValue("analytics"),
 						Permissions: &DatabasePermissions{}, // explicit empty
@@ -1061,7 +1252,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:        types.StringValue("analytics"),
 						Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
@@ -1095,10 +1286,10 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name:        types.StringValue("events"),
 								Permissions: &TablePermissions{Select: types.BoolValue(true)},
@@ -1112,7 +1303,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("analytics")},
 				},
 			},
@@ -1136,10 +1327,10 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{
 								Name:        types.StringValue("events"),
 								Permissions: &TablePermissions{Select: types.BoolValue(true)},
@@ -1153,10 +1344,10 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("analytics"),
-						Tables: []TablePermModel{
+						Table: []TablePermModel{
 							{Name: types.StringValue("events")}, // permissions nil
 						},
 					},
@@ -1178,7 +1369,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("raw"),
 						Wildcard: &TablePermModel{
@@ -1192,7 +1383,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("raw")}, // wildcard nil
 				},
 			},
@@ -1216,7 +1407,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name: types.StringValue("raw"),
 						Wildcard: &TablePermModel{
@@ -1230,7 +1421,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{
 						Name:     types.StringValue("raw"),
 						Wildcard: &TablePermModel{}, // present but permissions nil
@@ -1255,7 +1446,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("analytics"), Permissions: &DatabasePermissions{Describe: types.BoolValue(true)}},
 					{Name: types.StringValue("staging"), Permissions: &DatabasePermissions{Alter: types.BoolValue(true)}},
 					{Name: types.StringValue("old"), Permissions: &DatabasePermissions{Drop: types.BoolValue(true)}},
@@ -1266,7 +1457,7 @@ func TestRevokeForUpdate(t *testing.T) {
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
-				Databases: []DatabasePermModel{
+				Database: []DatabasePermModel{
 					{Name: types.StringValue("analytics"), Permissions: &DatabasePermissions{CreateTable: types.BoolValue(true)}},
 					{Name: types.StringValue("staging")}, // permissions nil
 					// "old" absent

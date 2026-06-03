@@ -320,6 +320,290 @@ terraform import bai_s3tables_table.events \
   "123456789012:s3tablescatalog/my-table-bucket,us-east-1,analytics,events"
 ```
 
+### `bai_lakeformation_permissions`
+
+Manages AWS Lake Formation permissions for an IAM principal over a catalog, its databases, and their tables. On each apply, the provider revokes any permissions that have been removed and grants any new ones — only touching resources explicitly declared in the configuration.
+
+#### Example — Catalog-level permissions
+
+```hcl
+resource "bai_lakeformation_permissions" "data_admin" {
+  principal = "arn:aws:iam::123456789012:role/DataAdminRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    permissions {
+      create_database = true
+      describe        = true
+    }
+  }
+}
+```
+
+#### Example — Database-level permissions
+
+```hcl
+resource "bai_lakeformation_permissions" "db_user" {
+  principal = "arn:aws:iam::123456789012:role/AnalyticsRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    database {
+      name = "analytics"
+
+      permissions {
+        describe     = true
+        create_table = true
+      }
+    }
+  }
+}
+```
+
+#### Example — Named table permissions
+
+```hcl
+resource "bai_lakeformation_permissions" "table_reader" {
+  principal = "arn:aws:iam::123456789012:role/ReaderRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    database {
+      name = "analytics"
+
+      table {
+        name = "events"
+
+        permissions {
+          select   = true
+          describe = true
+        }
+      }
+
+      table {
+        name = "metrics"
+
+        permissions {
+          select = true
+          insert = true
+        }
+      }
+    }
+  }
+}
+```
+
+#### Example — Wildcard permissions (all tables in a database)
+
+```hcl
+resource "bai_lakeformation_permissions" "db_full_access" {
+  principal = "arn:aws:iam::123456789012:role/ETLRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    database {
+      name = "analytics"
+
+      wildcard {
+        permissions {
+          select = true
+          insert = true
+          delete = true
+          alter  = true
+        }
+      }
+    }
+  }
+}
+```
+
+#### Example — Using `all = true` shorthand
+
+Set `all = true` to grant all permissions for that resource level at once, instead of listing individual flags. This is equivalent to specifying every individual permission as `true`.
+
+```hcl
+resource "bai_lakeformation_permissions" "full_access" {
+  principal = "arn:aws:iam::123456789012:role/AdminRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    permissions {
+      all = true
+    }
+
+    database {
+      name = "analytics"
+
+      permissions {
+        all = true
+      }
+
+      wildcard {
+        permissions {
+          all = true
+        }
+      }
+    }
+  }
+}
+```
+
+#### Example — Grantable permissions (grant with grant option)
+
+`grantable_permissions` grants the principal the ability to re-grant those same permissions to other principals. It mirrors `permissions` in structure and may be configured alongside or independently of `permissions`.
+
+```hcl
+resource "bai_lakeformation_permissions" "delegated_admin" {
+  principal = "arn:aws:iam::123456789012:role/DelegatedAdminRole"
+  region    = "us-east-1"
+
+  catalog {
+    id = "123456789012"
+
+    database {
+      name = "analytics"
+
+      table {
+        name = "events"
+
+        permissions {
+          select   = true
+          describe = true
+        }
+
+        grantable_permissions {
+          select = true
+        }
+      }
+    }
+  }
+}
+```
+
+#### Omitted vs empty permissions blocks
+
+The `permissions` and `grantable_permissions` blocks have two distinct states that behave differently:
+
+- **Omitted** (`permissions` block absent): The provider makes no Lake Formation API call for that permission type. Existing permissions are left untouched, regardless of what AWS currently has. Use this when you want Terraform to manage only a subset of a principal's permissions.
+
+- **Empty** (`permissions {}` block present but no flags set): The provider actively revokes all permissions of that type for the resource. Use this to explicitly remove all previously granted permissions.
+
+```hcl
+# permissions block omitted — provider ignores existing catalog permissions
+catalog {
+  id = "123456789012"
+
+  database {
+    name = "analytics"
+
+    permissions {
+      describe = true   # only this is managed; grantable_permissions are untouched
+    }
+  }
+}
+```
+
+```hcl
+# empty permissions block — provider revokes all database permissions
+catalog {
+  id = "123456789012"
+
+  database {
+    name = "analytics"
+
+    permissions {}   # revokes any previously granted database permissions
+  }
+}
+```
+
+Similarly, removing a `database`, `table`, or `wildcard` block from configuration causes the provider to revoke all associated permissions on the next apply.
+
+#### Argument Reference
+
+**Top-level arguments:**
+
+| Argument | Type | Required | Forces New Resource | Description |
+|----------|------|----------|---------------------|-------------|
+| `principal` | string | Yes | Yes | IAM principal ARN to grant permissions to. |
+| `region` | string | Yes | Yes | AWS region where the Lake Formation permissions reside. |
+
+**`catalog` block:**
+
+| Argument | Type | Required | Forces New Resource | Description |
+|----------|------|----------|---------------------|-------------|
+| `id` | string | Yes | Yes | AWS account ID (catalog ID) that owns the resources. |
+| `permissions` | block | No | — | Catalog-level permissions to grant (see below). |
+| `grantable_permissions` | block | No | — | Catalog-level permissions the principal can grant to others. |
+| `database` | block list | No | — | Zero or more database blocks. |
+
+**`database` block:**
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `name` | string | Yes | Database name. |
+| `permissions` | block | No | Database-level permissions to grant. |
+| `grantable_permissions` | block | No | Database-level permissions the principal can grant to others. |
+| `table` | block list | No | Named table permission blocks. Mutually exclusive with `wildcard`. |
+| `wildcard` | block | No | Permissions on all tables in this database. Mutually exclusive with `table`. |
+
+**`table` block:**
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `name` | string | Yes | Table name. |
+| `permissions` | block | No | Table-level permissions to grant. |
+| `grantable_permissions` | block | No | Table-level permissions the principal can grant to others. |
+
+**`wildcard` block:**
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `permissions` | block | No | Table-level permissions to grant on all tables in the database. |
+| `grantable_permissions` | block | No | Table-level permissions the principal can grant to others on all tables. |
+
+**Catalog `permissions` / `grantable_permissions` attributes:**
+
+| Attribute | Description |
+|-----------|-------------|
+| `all` | Grant all catalog permissions. Mutually exclusive with individual attributes. |
+| `alter` | `ALTER` |
+| `create_catalog` | `CREATE_CATALOG` |
+| `create_database` | `CREATE_DATABASE` |
+| `describe` | `DESCRIBE` |
+| `drop` | `DROP` |
+
+**Database `permissions` / `grantable_permissions` attributes:**
+
+| Attribute | Description |
+|-----------|-------------|
+| `all` | Grant all database permissions. Mutually exclusive with individual attributes. |
+| `alter` | `ALTER` |
+| `create_table` | `CREATE_TABLE` |
+| `describe` | `DESCRIBE` |
+| `drop` | `DROP` |
+
+**Table `permissions` / `grantable_permissions` attributes (also applies to `wildcard`):**
+
+| Attribute | Description |
+|-----------|-------------|
+| `all` | Grant all table permissions. Mutually exclusive with individual attributes. |
+| `alter` | `ALTER` |
+| `delete` | `DELETE` |
+| `describe` | `DESCRIBE` |
+| `drop` | `DROP` |
+| `insert` | `INSERT` |
+| `select` | `SELECT` |
+
 ## Building the Provider
 
 ```shell

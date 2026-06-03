@@ -23,7 +23,6 @@ import (
 
 var _ resource.Resource = &LakeFormationPermissionsResource{}
 var _ resource.ResourceWithConfigValidators = &LakeFormationPermissionsResource{}
-var _ resource.ResourceWithModifyPlan = &LakeFormationPermissionsResource{}
 
 // lfClientIface is the subset of the LF client API used by this resource.
 // *lakeformation.Client satisfies it; tests substitute a mock.
@@ -38,8 +37,6 @@ func NewLakeFormationPermissionsResource() resource.Resource {
 }
 
 // --- Permission level structs ---
-// all is a schema-only convenience field; ModifyPlan expands it to individual booleans
-// before state is written, so it is never persisted.
 
 type CatalogPermissions struct {
 	All            types.Bool `tfsdk:"all"`
@@ -84,14 +81,14 @@ type CatalogPermModel struct {
 	ID                   types.String         `tfsdk:"id"`
 	Permissions          *CatalogPermissions  `tfsdk:"permissions"`
 	GrantablePermissions *CatalogPermissions  `tfsdk:"grantable_permissions"`
-	Databases            []DatabasePermModel  `tfsdk:"databases"`
+	Database             []DatabasePermModel  `tfsdk:"database"`
 }
 
 type DatabasePermModel struct {
 	Name                 types.String          `tfsdk:"name"`
 	Permissions          *DatabasePermissions  `tfsdk:"permissions"`
 	GrantablePermissions *DatabasePermissions  `tfsdk:"grantable_permissions"`
-	Tables               []TablePermModel     `tfsdk:"tables"`
+	Table                []TablePermModel     `tfsdk:"table"`
 	Wildcard             *TablePermModel      `tfsdk:"wildcard"`
 }
 
@@ -184,7 +181,7 @@ func (r *LakeFormationPermissionsResource) Schema(_ context.Context, _ resource.
 					"grantable_permissions": catalogPermAttr("Catalog-level permissions the principal can grant to others."),
 				},
 				Blocks: map[string]schema.Block{
-					"databases": schema.ListNestedBlock{
+					"database": schema.ListNestedBlock{
 						MarkdownDescription: "Database-level permissions.",
 						NestedObject: schema.NestedBlockObject{
 							Attributes: map[string]schema.Attribute{
@@ -196,7 +193,7 @@ func (r *LakeFormationPermissionsResource) Schema(_ context.Context, _ resource.
 								"grantable_permissions": databasePermAttr("Database-level permissions the principal can grant to others."),
 							},
 							Blocks: map[string]schema.Block{
-								"tables": schema.ListNestedBlock{
+								"table": schema.ListNestedBlock{
 									MarkdownDescription: "Named table permissions. Mutually exclusive with `wildcard`.",
 									NestedObject: schema.NestedBlockObject{
 										Attributes: map[string]schema.Attribute{
@@ -210,7 +207,7 @@ func (r *LakeFormationPermissionsResource) Schema(_ context.Context, _ resource.
 									},
 								},
 								"wildcard": schema.SingleNestedBlock{
-									MarkdownDescription: "Permissions on all tables in this database. Mutually exclusive with `tables`.",
+									MarkdownDescription: "Permissions on all tables in this database. Mutually exclusive with `table`.",
 									Attributes: map[string]schema.Attribute{
 										"name":                  schema.StringAttribute{Optional: true, MarkdownDescription: "Must be omitted or empty; present only for struct compatibility with named table entries."},
 										"permissions":           tablePermAttr("Table-level permissions to grant on all tables."),
@@ -301,24 +298,24 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 	checkCatalogExclusive(data.Catalog.Permissions, catPath.AtName("permissions"))
 	checkCatalogExclusive(data.Catalog.GrantablePermissions, catPath.AtName("grantable_permissions"))
 
-	for i, db := range data.Catalog.Databases {
-		dbPath := catPath.AtName("databases").AtListIndex(i)
+	for i, db := range data.Catalog.Database {
+		dbPath := catPath.AtName("database").AtListIndex(i)
 
-		if len(db.Tables) > 0 && db.Wildcard != nil {
+		if len(db.Table) > 0 && db.Wildcard != nil {
 			resp.Diagnostics.AddAttributeError(dbPath, "Conflicting configuration",
-				"A database block cannot specify both tables and wildcard.")
+				"A database block cannot specify both table and wildcard.")
 		}
 
 		checkDatabaseExclusive(db.Permissions, dbPath.AtName("permissions"))
 		checkDatabaseExclusive(db.GrantablePermissions, dbPath.AtName("grantable_permissions"))
 
-		for j, tbl := range db.Tables {
-			tblPath := dbPath.AtName("tables").AtListIndex(j)
+		for j, tbl := range db.Table {
+			tblPath := dbPath.AtName("table").AtListIndex(j)
 			checkTableExclusive(tbl.Permissions, tblPath.AtName("permissions"))
 			checkTableExclusive(tbl.GrantablePermissions, tblPath.AtName("grantable_permissions"))
 			if tbl.Permissions == nil && tbl.GrantablePermissions == nil {
 				resp.Diagnostics.AddAttributeError(tblPath, "Missing required attribute",
-					"A tables block must specify at least one of 'permissions' or 'grantable_permissions'.")
+					"A table block must specify at least one of 'permissions' or 'grantable_permissions'.")
 			}
 		}
 
@@ -380,7 +377,7 @@ func (r *LakeFormationPermissionsResource) Read(ctx context.Context, req resourc
 		data.Catalog.GrantablePermissions = refreshPerms(data.Catalog.GrantablePermissions, g)
 	}
 
-	for i, db := range data.Catalog.Databases {
+	for i, db := range data.Catalog.Database {
 		p, g, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
 			Database: &lftypes.DatabaseResource{
 				CatalogId: aws.String(catalogID),
@@ -391,10 +388,10 @@ func (r *LakeFormationPermissionsResource) Read(ctx context.Context, req resourc
 			resp.Diagnostics.AddError("Failed to read database permissions", err.Error())
 			return
 		}
-		data.Catalog.Databases[i].Permissions = refreshPerms(db.Permissions, p)
-		data.Catalog.Databases[i].GrantablePermissions = refreshPerms(db.GrantablePermissions, g)
+		data.Catalog.Database[i].Permissions = refreshPerms(db.Permissions, p)
+		data.Catalog.Database[i].GrantablePermissions = refreshPerms(db.GrantablePermissions, g)
 
-		for j, tbl := range db.Tables {
+		for j, tbl := range db.Table {
 			tp, tg, err := listLFPerms(ctx, client, principal, &lftypes.Resource{
 				Table: &lftypes.TableResource{
 					CatalogId:    aws.String(catalogID),
@@ -406,8 +403,8 @@ func (r *LakeFormationPermissionsResource) Read(ctx context.Context, req resourc
 				resp.Diagnostics.AddError("Failed to read table permissions", err.Error())
 				return
 			}
-			data.Catalog.Databases[i].Tables[j].Permissions = refreshPerms(tbl.Permissions, tp)
-			data.Catalog.Databases[i].Tables[j].GrantablePermissions = refreshPerms(tbl.GrantablePermissions, tg)
+			data.Catalog.Database[i].Table[j].Permissions = refreshPerms(tbl.Permissions, tp)
+			data.Catalog.Database[i].Table[j].GrantablePermissions = refreshPerms(tbl.GrantablePermissions, tg)
 		}
 
 		if db.Wildcard != nil {
@@ -422,9 +419,9 @@ func (r *LakeFormationPermissionsResource) Read(ctx context.Context, req resourc
 				resp.Diagnostics.AddError("Failed to read wildcard permissions", err.Error())
 				return
 			}
-			data.Catalog.Databases[i].Wildcard.IsWildcard = true
-			data.Catalog.Databases[i].Wildcard.Permissions = refreshPerms(db.Wildcard.Permissions, wp)
-			data.Catalog.Databases[i].Wildcard.GrantablePermissions = refreshPerms(db.Wildcard.GrantablePermissions, wg)
+			data.Catalog.Database[i].Wildcard.IsWildcard = true
+			data.Catalog.Database[i].Wildcard.Permissions = refreshPerms(db.Wildcard.Permissions, wp)
+			data.Catalog.Database[i].Wildcard.GrantablePermissions = refreshPerms(db.Wildcard.GrantablePermissions, wg)
 		}
 	}
 
@@ -489,7 +486,7 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 		return fmt.Errorf("catalog: %w", err)
 	}
 
-	for _, db := range data.Catalog.Databases {
+	for _, db := range data.Catalog.Database {
 		dbRes := &lftypes.Resource{
 			Database: &lftypes.DatabaseResource{
 				CatalogId: aws.String(catalogID),
@@ -502,7 +499,7 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 			return fmt.Errorf("database %s: %w", db.Name.ValueString(), err)
 		}
 
-		for _, tbl := range db.Tables {
+		for _, tbl := range db.Table {
 			tblRes := &lftypes.Resource{
 				Table: &lftypes.TableResource{
 					CatalogId:    aws.String(catalogID),
@@ -558,12 +555,12 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 		return fmt.Errorf("catalog: %w", err)
 	}
 
-	planDBIdx := make(map[string]DatabasePermModel, len(plan.Catalog.Databases))
-	for _, db := range plan.Catalog.Databases {
+	planDBIdx := make(map[string]DatabasePermModel, len(plan.Catalog.Database))
+	for _, db := range plan.Catalog.Database {
 		planDBIdx[db.Name.ValueString()] = db
 	}
 
-	for _, stDB := range state.Catalog.Databases {
+	for _, stDB := range state.Catalog.Database {
 		name := stDB.Name.ValueString()
 		plDB, inPlan := planDBIdx[name]
 		dbRes := &lftypes.Resource{
@@ -586,12 +583,12 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 
 		planTblIdx := make(map[string]TablePermModel)
 		if inPlan {
-			for _, tbl := range plDB.Tables {
+			for _, tbl := range plDB.Table {
 				planTblIdx[tbl.Name.ValueString()] = tbl
 			}
 		}
 
-		for _, stTbl := range stDB.Tables {
+		for _, stTbl := range stDB.Table {
 			tblName := stTbl.Name.ValueString()
 			plTbl, tblInPlan := planTblIdx[tblName]
 			tblRes := &lftypes.Resource{
@@ -692,10 +689,13 @@ func listLFPerms(ctx context.Context, client lfClientIface, principal string, re
 // --- Permission struct ↔ API conversions ---
 
 // catalogPermsToAPI converts to an API permission list.
-// If all individual permissions are true, returns [ALL] instead of listing them.
+// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
 func catalogPermsToAPI(p *CatalogPermissions) []lftypes.Permission {
 	if p == nil {
 		return nil
+	}
+	if p.All.ValueBool() {
+		return []lftypes.Permission{lftypes.PermissionAll}
 	}
 	if p.Alter.ValueBool() && p.CreateCatalog.ValueBool() && p.CreateDatabase.ValueBool() &&
 		p.Describe.ValueBool() && p.Drop.ValueBool() {
@@ -711,10 +711,13 @@ func catalogPermsToAPI(p *CatalogPermissions) []lftypes.Permission {
 }
 
 // databasePermsToAPI converts to an API permission list.
-// If all individual permissions are true, returns [ALL] instead of listing them.
+// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
 func databasePermsToAPI(p *DatabasePermissions) []lftypes.Permission {
 	if p == nil {
 		return nil
+	}
+	if p.All.ValueBool() {
+		return []lftypes.Permission{lftypes.PermissionAll}
 	}
 	if p.Alter.ValueBool() && p.CreateTable.ValueBool() && p.Describe.ValueBool() && p.Drop.ValueBool() {
 		return []lftypes.Permission{lftypes.PermissionAll}
@@ -728,10 +731,13 @@ func databasePermsToAPI(p *DatabasePermissions) []lftypes.Permission {
 }
 
 // tablePermsToAPI converts to an API permission list.
-// If all individual permissions are true, returns [ALL] instead of listing them.
+// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
 func tablePermsToAPI(p *TablePermissions) []lftypes.Permission {
 	if p == nil {
 		return nil
+	}
+	if p.All.ValueBool() {
+		return []lftypes.Permission{lftypes.PermissionAll}
 	}
 	if p.Alter.ValueBool() && p.Delete.ValueBool() && p.Describe.ValueBool() &&
 		p.Drop.ValueBool() && p.Insert.ValueBool() && p.Select.ValueBool() {
@@ -749,7 +755,9 @@ func tablePermsToAPI(p *TablePermissions) []lftypes.Permission {
 
 // refreshPerms returns a new permissions struct reflecting which declared permissions are
 // currently active. Each field's tfsdk tag encodes the AWS permission name
-// (e.g. "create_database" → CREATE_DATABASE); ALL in current sets every declared field true.
+// (e.g. "create_database" → CREATE_DATABASE, "all" → ALL); ALL in current sets every
+// declared individual flag true. The "all" field itself is refreshed via the same
+// mechanism: if the user declared all=true and ALL is still active in AWS, it stays true.
 func refreshPerms[T any](declared *T, current []lftypes.Permission) *T {
 	if declared == nil {
 		return nil
@@ -761,68 +769,13 @@ func refreshPerms[T any](declared *T, current []lftypes.Permission) *T {
 	nv := reflect.New(t).Elem()
 	for i := 0; i < t.NumField(); i++ {
 		tag := t.Field(i).Tag.Get("tfsdk")
-		if tag == "all" {
+		if tag == "-" {
 			continue
 		}
 		perm := lftypes.Permission(strings.ToUpper(tag))
 		nv.Field(i).Set(reflect.ValueOf(
 			refreshBool(dv.Field(i).Interface().(types.Bool), perm, s, hasAll),
 		))
-	}
-	return nv.Addr().Interface().(*T)
-}
-
-// ModifyPlan expands any `all = true` in a permissions block to individual boolean flags,
-// then normalises `all` to null so it is never persisted in state.
-func (r *LakeFormationPermissionsResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() {
-		return // destroy — nothing to expand
-	}
-	var plan LakeFormationPermissionsResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() || plan.Catalog == nil {
-		return
-	}
-
-	plan.Catalog.Permissions = expandAllPerms(plan.Catalog.Permissions)
-	plan.Catalog.GrantablePermissions = expandAllPerms(plan.Catalog.GrantablePermissions)
-
-	for i, db := range plan.Catalog.Databases {
-		plan.Catalog.Databases[i].Permissions = expandAllPerms(db.Permissions)
-		plan.Catalog.Databases[i].GrantablePermissions = expandAllPerms(db.GrantablePermissions)
-
-		for j, tbl := range db.Tables {
-			plan.Catalog.Databases[i].Tables[j].Permissions = expandAllPerms(tbl.Permissions)
-			plan.Catalog.Databases[i].Tables[j].GrantablePermissions = expandAllPerms(tbl.GrantablePermissions)
-		}
-
-		if db.Wildcard != nil {
-			plan.Catalog.Databases[i].Wildcard.IsWildcard = true
-			plan.Catalog.Databases[i].Wildcard.Permissions = expandAllPerms(db.Wildcard.Permissions)
-			plan.Catalog.Databases[i].Wildcard.GrantablePermissions = expandAllPerms(db.Wildcard.GrantablePermissions)
-		}
-	}
-
-	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-}
-
-// expandAllPerms replaces all=true with every individual flag set to true, leaving all as null.
-// The tfsdk tag "all" identifies the shorthand field to check and skip when setting individual flags.
-func expandAllPerms[T any](p *T) *T {
-	if p == nil {
-		return nil
-	}
-	v := reflect.ValueOf(p).Elem()
-	allField := v.FieldByName("All")
-	if !allField.IsValid() || !allField.Interface().(types.Bool).ValueBool() {
-		return p
-	}
-	nv := reflect.New(v.Type()).Elem()
-	trueVal := reflect.ValueOf(types.BoolValue(true))
-	for i := 0; i < v.NumField(); i++ {
-		if v.Type().Field(i).Tag.Get("tfsdk") != "all" {
-			nv.Field(i).Set(trueVal)
-		}
 	}
 	return nv.Addr().Interface().(*T)
 }
@@ -836,10 +789,13 @@ func permSet(perms []lftypes.Permission) map[lftypes.Permission]bool {
 	return s
 }
 
-// refreshBool returns true if the permission was declared and is currently active (or ALL is active).
+// refreshBool returns the current state of a declared permission, or null if the
+// field was not declared. Null (not false) is used for undeclared fields so that
+// state and plan agree — config also produces null for unconfigured Optional fields,
+// and cty treats false ≠ null, which would cause phantom plan diffs.
 func refreshBool(declared types.Bool, perm lftypes.Permission, current map[lftypes.Permission]bool, hasAll bool) types.Bool {
 	if !declared.ValueBool() {
-		return types.BoolValue(false)
+		return types.BoolNull()
 	}
 	return types.BoolValue(current[perm] || hasAll)
 }

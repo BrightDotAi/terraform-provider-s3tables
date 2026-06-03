@@ -33,12 +33,12 @@ Required:
 
 Optional:
 
-- `databases` (Block List) Database-level permissions. (see [below for nested schema](#nestedblock--catalog--databases))
+- `database` (Block List) Database-level permissions. (see [below for nested schema](#nestedblock--catalog--database))
 - `grantable_permissions` (Attributes) Catalog-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--grantable_permissions))
 - `permissions` (Attributes) Catalog-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--permissions))
 
-<a id="nestedblock--catalog--databases"></a>
-### Nested Schema for `catalog.databases`
+<a id="nestedblock--catalog--database"></a>
+### Nested Schema for `catalog.database`
 
 Required:
 
@@ -48,11 +48,11 @@ Optional:
 
 - `grantable_permissions` (Attributes) Database-level permissions the principal can grant to others. (see [below for nested schema](#nestedatt--catalog--databases--grantable_permissions))
 - `permissions` (Attributes) Database-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--databases--permissions))
-- `tables` (Block List) Named table permissions. Mutually exclusive with `wildcard`. (see [below for nested schema](#nestedblock--catalog--databases--tables))
-- `wildcard` (Block, Optional) Permissions on all tables in this database. Mutually exclusive with `tables`. (see [below for nested schema](#nestedblock--catalog--databases--wildcard))
+- `table` (Block List) Named table permissions. Mutually exclusive with `wildcard`. (see [below for nested schema](#nestedblock--catalog--database--tables))
+- `wildcard` (Block, Optional) Permissions on all tables in this database. Mutually exclusive with `table`. (see [below for nested schema](#nestedblock--catalog--database--wildcard))
 
 <a id="nestedatt--catalog--databases--grantable_permissions"></a>
-### Nested Schema for `catalog.databases.grantable_permissions`
+### Nested Schema for `catalog.database.grantable_permissions`
 
 Optional:
 
@@ -64,7 +64,7 @@ Optional:
 
 
 <a id="nestedatt--catalog--databases--permissions"></a>
-### Nested Schema for `catalog.databases.permissions`
+### Nested Schema for `catalog.database.permissions`
 
 Optional:
 
@@ -75,8 +75,8 @@ Optional:
 - `drop` (Boolean) Grants DROP on the database.
 
 
-<a id="nestedblock--catalog--databases--tables"></a>
-### Nested Schema for `catalog.databases.tables`
+<a id="nestedblock--catalog--database--tables"></a>
+### Nested Schema for `catalog.database.table`
 
 Required:
 
@@ -88,7 +88,7 @@ Optional:
 - `permissions` (Attributes) Table-level permissions to grant. (see [below for nested schema](#nestedatt--catalog--databases--tables--permissions))
 
 <a id="nestedatt--catalog--databases--tables--grantable_permissions"></a>
-### Nested Schema for `catalog.databases.tables.grantable_permissions`
+### Nested Schema for `catalog.database.table.grantable_permissions`
 
 Optional:
 
@@ -102,7 +102,7 @@ Optional:
 
 
 <a id="nestedatt--catalog--databases--tables--permissions"></a>
-### Nested Schema for `catalog.databases.tables.permissions`
+### Nested Schema for `catalog.database.table.permissions`
 
 Optional:
 
@@ -116,8 +116,8 @@ Optional:
 
 
 
-<a id="nestedblock--catalog--databases--wildcard"></a>
-### Nested Schema for `catalog.databases.wildcard`
+<a id="nestedblock--catalog--database--wildcard"></a>
+### Nested Schema for `catalog.database.wildcard`
 
 Optional:
 
@@ -126,7 +126,7 @@ Optional:
 - `permissions` (Attributes) Table-level permissions to grant on all tables. (see [below for nested schema](#nestedatt--catalog--databases--wildcard--permissions))
 
 <a id="nestedatt--catalog--databases--wildcard--grantable_permissions"></a>
-### Nested Schema for `catalog.databases.wildcard.grantable_permissions`
+### Nested Schema for `catalog.database.wildcard.grantable_permissions`
 
 Optional:
 
@@ -140,7 +140,7 @@ Optional:
 
 
 <a id="nestedatt--catalog--databases--wildcard--permissions"></a>
-### Nested Schema for `catalog.databases.wildcard.permissions`
+### Nested Schema for `catalog.database.wildcard.permissions`
 
 Optional:
 
