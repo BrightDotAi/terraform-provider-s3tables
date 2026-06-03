@@ -643,10 +643,7 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 			iproperties[name] = val
 		}
 	}
-	// add format version if not 2
-	if version != "2" {
-		iproperties["format-version"] = version
-	}
+	iproperties["format-version"] = version
 	return &iproperties, nil
 }
 
@@ -739,6 +736,9 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 	sort.Strings(prop_names)
 
 	for _, name := range prop_names {
+		if name == "format-version" {
+			continue
+		}
 		if dv, exists := prop_defaults[name]; !exists || props[name] != dv {
 			models = append(models, PropertyModel{
 				Name:  types.StringValue(name),

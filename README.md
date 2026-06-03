@@ -37,8 +37,8 @@ catalog.
 terraform {
   required_providers {
     bai = {
-      source  = "BrightDotAi/brightai-s3tables"
-      version = "~> 0.1"
+      source  = "BrightDotAi/s3tables"
+      version = "~> 1.0"
     }
   }
 }
