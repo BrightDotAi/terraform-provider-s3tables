@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	lakeformation "github.com/aws/aws-sdk-go-v2/service/lakeformation"
 	lftypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -264,40 +265,14 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 		return
 	}
 
-	// checkAllExclusive errors if `all` is true alongside any individual permission boolean.
-	checkCatalogExclusive := func(p *CatalogPermissions, attrPath path.Path) {
-		if p == nil || !p.All.ValueBool() {
-			return
-		}
-		if p.Alter.ValueBool() || p.CreateCatalog.ValueBool() || p.CreateDatabase.ValueBool() ||
-			p.Describe.ValueBool() || p.Drop.ValueBool() {
-			resp.Diagnostics.AddAttributeError(attrPath.AtName("all"), "Conflicting attributes",
-				"Cannot set 'all' alongside individual permission attributes.")
-		}
-	}
-	checkDatabaseExclusive := func(p *DatabasePermissions, attrPath path.Path) {
-		if p == nil || !p.All.ValueBool() {
-			return
-		}
-		if p.Alter.ValueBool() || p.CreateTable.ValueBool() || p.Describe.ValueBool() || p.Drop.ValueBool() {
-			resp.Diagnostics.AddAttributeError(attrPath.AtName("all"), "Conflicting attributes",
-				"Cannot set 'all' alongside individual permission attributes.")
-		}
-	}
-	checkTableExclusive := func(p *TablePermissions, attrPath path.Path) {
-		if p == nil || !p.All.ValueBool() {
-			return
-		}
-		if p.Alter.ValueBool() || p.Delete.ValueBool() || p.Describe.ValueBool() ||
-			p.Drop.ValueBool() || p.Insert.ValueBool() || p.Select.ValueBool() {
-			resp.Diagnostics.AddAttributeError(attrPath.AtName("all"), "Conflicting attributes",
-				"Cannot set 'all' alongside individual permission attributes.")
-		}
+	checkPerms := func(p any, attrPath path.Path) {
+		checkAllExclusive(p, attrPath, &resp.Diagnostics)
+		checkNoImplicitAll(p, attrPath, &resp.Diagnostics)
 	}
 
 	catPath := path.Root("catalog")
-	checkCatalogExclusive(data.Catalog.Permissions, catPath.AtName("permissions"))
-	checkCatalogExclusive(data.Catalog.GrantablePermissions, catPath.AtName("grantable_permissions"))
+	checkPerms(data.Catalog.Permissions, catPath.AtName("permissions"))
+	checkPerms(data.Catalog.GrantablePermissions, catPath.AtName("grantable_permissions"))
 
 	for i, db := range data.Catalog.Database {
 		dbPath := catPath.AtName("database").AtListIndex(i)
@@ -307,13 +282,13 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 				"A database block cannot specify both table and wildcard.")
 		}
 
-		checkDatabaseExclusive(db.Permissions, dbPath.AtName("permissions"))
-		checkDatabaseExclusive(db.GrantablePermissions, dbPath.AtName("grantable_permissions"))
+		checkPerms(db.Permissions, dbPath.AtName("permissions"))
+		checkPerms(db.GrantablePermissions, dbPath.AtName("grantable_permissions"))
 
 		for j, tbl := range db.Table {
 			tblPath := dbPath.AtName("table").AtListIndex(j)
-			checkTableExclusive(tbl.Permissions, tblPath.AtName("permissions"))
-			checkTableExclusive(tbl.GrantablePermissions, tblPath.AtName("grantable_permissions"))
+			checkPerms(tbl.Permissions, tblPath.AtName("permissions"))
+			checkPerms(tbl.GrantablePermissions, tblPath.AtName("grantable_permissions"))
 			if tbl.Permissions == nil && tbl.GrantablePermissions == nil {
 				resp.Diagnostics.AddAttributeError(tblPath, "Missing required attribute",
 					"A table block must specify at least one of 'permissions' or 'grantable_permissions'.")
@@ -322,8 +297,8 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 
 		if db.Wildcard != nil {
 			wcPath := dbPath.AtName("wildcard")
-			checkTableExclusive(db.Wildcard.Permissions, wcPath.AtName("permissions"))
-			checkTableExclusive(db.Wildcard.GrantablePermissions, wcPath.AtName("grantable_permissions"))
+			checkPerms(db.Wildcard.Permissions, wcPath.AtName("permissions"))
+			checkPerms(db.Wildcard.GrantablePermissions, wcPath.AtName("grantable_permissions"))
 			if db.Wildcard.Permissions == nil && db.Wildcard.GrantablePermissions == nil {
 				resp.Diagnostics.AddAttributeError(wcPath, "Missing required attribute",
 					"A wildcard block must specify at least one of 'permissions' or 'grantable_permissions'.")
@@ -333,6 +308,79 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 					"The 'name' attribute must not be set in a wildcard block.")
 			}
 		}
+	}
+}
+
+// checkAllExclusive reports an error on attrPath.all if the struct pointed to
+// by p has an All field set to true while any other types.Bool field is also
+// true. p must be a pointer to a struct; nil pointers are silently ignored.
+func checkAllExclusive(p any, attrPath path.Path, diags *diag.Diagnostics) {
+	if p == nil {
+		return
+	}
+	rv := reflect.ValueOf(p)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return
+	}
+	rv = rv.Elem()
+	allField := rv.FieldByName("All")
+	if !allField.IsValid() {
+		return
+	}
+	allBool, ok := allField.Interface().(types.Bool)
+	if !ok || !allBool.ValueBool() {
+		return
+	}
+	t := rv.Type()
+	for i := 0; i < rv.NumField(); i++ {
+		if t.Field(i).Name == "All" {
+			continue
+		}
+		if b, ok := rv.Field(i).Interface().(types.Bool); ok && b.ValueBool() {
+			diags.AddAttributeError(attrPath.AtName("all"), "Conflicting attributes",
+				"Cannot set 'all' alongside individual permission attributes.")
+			return
+		}
+	}
+}
+
+// checkNoImplicitAll reports an error if every individual (non-All) field in
+// the struct pointed to by p is true while All is not. Users must express
+// "every permission" by setting all = true; selecting every individual flag is
+// not permitted.
+func checkNoImplicitAll(p any, attrPath path.Path, diags *diag.Diagnostics) {
+	if p == nil {
+		return
+	}
+	rv := reflect.ValueOf(p)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return
+	}
+	rv = rv.Elem()
+	allField := rv.FieldByName("All")
+	if allField.IsValid() {
+		if b, ok := allField.Interface().(types.Bool); ok && b.ValueBool() {
+			return
+		}
+	}
+	t := rv.Type()
+	total, trueCount := 0, 0
+	for i := 0; i < rv.NumField(); i++ {
+		if t.Field(i).Name == "All" {
+			continue
+		}
+		b, ok := rv.Field(i).Interface().(types.Bool)
+		if !ok {
+			continue
+		}
+		total++
+		if b.ValueBool() {
+			trueCount++
+		}
+	}
+	if total > 0 && trueCount == total {
+		diags.AddAttributeError(attrPath, "Implicit ALL not permitted",
+			"To grant every permission use all = true. Setting every individual flag is not allowed.")
 	}
 }
 
@@ -502,8 +550,8 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 
 	if err := grantLFPerms(ctx, client, principal,
 		&lftypes.Resource{Catalog: &lftypes.CatalogResource{}},
-		catalogPermsToAPI(data.Catalog.Permissions),
-		catalogPermsToAPI(data.Catalog.GrantablePermissions)); err != nil {
+		permsToAPI(data.Catalog.Permissions),
+		permsToAPI(data.Catalog.GrantablePermissions)); err != nil {
 		return fmt.Errorf("catalog: %w", err)
 	}
 
@@ -515,8 +563,8 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 			},
 		}
 		if err := grantLFPerms(ctx, client, principal, dbRes,
-			databasePermsToAPI(db.Permissions),
-			databasePermsToAPI(db.GrantablePermissions)); err != nil {
+			permsToAPI(db.Permissions),
+			permsToAPI(db.GrantablePermissions)); err != nil {
 			return fmt.Errorf("database %s: %w", db.Name.ValueString(), err)
 		}
 
@@ -529,8 +577,8 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 				},
 			}
 			if err := grantLFPerms(ctx, client, principal, tblRes,
-				tablePermsToAPI(tbl.Permissions),
-				tablePermsToAPI(tbl.GrantablePermissions)); err != nil {
+				permsToAPI(tbl.Permissions),
+				permsToAPI(tbl.GrantablePermissions)); err != nil {
 				return fmt.Errorf("table %s.%s: %w", db.Name.ValueString(), tbl.Name.ValueString(), err)
 			}
 		}
@@ -544,8 +592,8 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 				},
 			}
 			if err := grantLFPerms(ctx, client, principal, wcRes,
-				tablePermsToAPI(db.Wildcard.Permissions),
-				tablePermsToAPI(db.Wildcard.GrantablePermissions)); err != nil {
+				permsToAPI(db.Wildcard.Permissions),
+				permsToAPI(db.Wildcard.GrantablePermissions)); err != nil {
 				return fmt.Errorf("wildcard in database %s: %w", db.Name.ValueString(), err)
 			}
 		}
@@ -565,10 +613,10 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 
 	var catP, catG []lftypes.Permission
 	if plan.Catalog.Permissions != nil {
-		catP = catalogPermsToAPI(state.Catalog.Permissions)
+		catP = permsToAPI(state.Catalog.Permissions)
 	}
 	if plan.Catalog.GrantablePermissions != nil {
-		catG = catalogPermsToAPI(state.Catalog.GrantablePermissions)
+		catG = permsToAPI(state.Catalog.GrantablePermissions)
 	}
 	if err := revokeLFPerms(ctx, client, principal,
 		&lftypes.Resource{Catalog: &lftypes.CatalogResource{}},
@@ -593,10 +641,10 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 
 		var dbP, dbG []lftypes.Permission
 		if !inPlan || plDB.Permissions != nil {
-			dbP = databasePermsToAPI(stDB.Permissions)
+			dbP = permsToAPI(stDB.Permissions)
 		}
 		if !inPlan || plDB.GrantablePermissions != nil {
-			dbG = databasePermsToAPI(stDB.GrantablePermissions)
+			dbG = permsToAPI(stDB.GrantablePermissions)
 		}
 		if err := revokeLFPerms(ctx, client, principal, dbRes, dbP, dbG); err != nil {
 			return fmt.Errorf("database %s: %w", name, err)
@@ -621,10 +669,10 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 			}
 			var tP, tG []lftypes.Permission
 			if !tblInPlan || plTbl.Permissions != nil {
-				tP = tablePermsToAPI(stTbl.Permissions)
+				tP = permsToAPI(stTbl.Permissions)
 			}
 			if !tblInPlan || plTbl.GrantablePermissions != nil {
-				tG = tablePermsToAPI(stTbl.GrantablePermissions)
+				tG = permsToAPI(stTbl.GrantablePermissions)
 			}
 			if err := revokeLFPerms(ctx, client, principal, tblRes, tP, tG); err != nil {
 				return fmt.Errorf("table %s.%s: %w", name, tblName, err)
@@ -641,14 +689,14 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 			}
 			var wP, wG []lftypes.Permission
 			if !inPlan || plDB.Wildcard == nil {
-				wP = tablePermsToAPI(stDB.Wildcard.Permissions)
-				wG = tablePermsToAPI(stDB.Wildcard.GrantablePermissions)
+				wP = permsToAPI(stDB.Wildcard.Permissions)
+				wG = permsToAPI(stDB.Wildcard.GrantablePermissions)
 			} else {
 				if plDB.Wildcard.Permissions != nil {
-					wP = tablePermsToAPI(stDB.Wildcard.Permissions)
+					wP = permsToAPI(stDB.Wildcard.Permissions)
 				}
 				if plDB.Wildcard.GrantablePermissions != nil {
-					wG = tablePermsToAPI(stDB.Wildcard.GrantablePermissions)
+					wG = permsToAPI(stDB.Wildcard.GrantablePermissions)
 				}
 			}
 			if err := revokeLFPerms(ctx, client, principal, wcRes, wP, wG); err != nil {
@@ -709,68 +757,56 @@ func listLFPerms(ctx context.Context, client lfClientIface, principal string, re
 
 // --- Permission struct ↔ API conversions ---
 
-// catalogPermsToAPI converts to an API permission list.
-// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
-func catalogPermsToAPI(p *CatalogPermissions) []lftypes.Permission {
-	if p == nil {
-		return nil
-	}
-	if p.All.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
-	}
-	if p.Alter.ValueBool() && p.CreateCatalog.ValueBool() && p.CreateDatabase.ValueBool() &&
-		p.Describe.ValueBool() && p.Drop.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
-	}
-	var out []lftypes.Permission
-	if p.Alter.ValueBool()          { out = append(out, lftypes.PermissionAlter) }
-	if p.CreateCatalog.ValueBool()  { out = append(out, lftypes.PermissionCreateCatalog) }
-	if p.CreateDatabase.ValueBool() { out = append(out, lftypes.PermissionCreateDatabase) }
-	if p.Describe.ValueBool()       { out = append(out, lftypes.PermissionDescribe) }
-	if p.Drop.ValueBool()           { out = append(out, lftypes.PermissionDrop) }
-	return out
+// lfPermMap maps tfsdk field tag names to their Lake Formation permission constants.
+var lfPermMap = map[string]lftypes.Permission{
+	"all":             lftypes.PermissionAll,
+	"alter":           lftypes.PermissionAlter,
+	"create_catalog":  lftypes.PermissionCreateCatalog,
+	"create_database": lftypes.PermissionCreateDatabase,
+	"create_table":    lftypes.PermissionCreateTable,
+	"delete":          lftypes.PermissionDelete,
+	"describe":        lftypes.PermissionDescribe,
+	"drop":            lftypes.PermissionDrop,
+	"insert":          lftypes.PermissionInsert,
+	"select":          lftypes.PermissionSelect,
 }
 
-// databasePermsToAPI converts to an API permission list.
-// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
-func databasePermsToAPI(p *DatabasePermissions) []lftypes.Permission {
+// permsToAPI converts any permission struct to an API permission list.
+// If the All field is true it returns [ALL] immediately. If every individual
+// (non-All) field is true it also collapses to [ALL].
+// p must be a pointer to a struct whose fields are types.Bool with tfsdk tags.
+func permsToAPI(p any) []lftypes.Permission {
 	if p == nil {
 		return nil
 	}
-	if p.All.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
+	rv := reflect.ValueOf(p)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return nil
 	}
-	if p.Alter.ValueBool() && p.CreateTable.ValueBool() && p.Describe.ValueBool() && p.Drop.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
-	}
-	var out []lftypes.Permission
-	if p.Alter.ValueBool()       { out = append(out, lftypes.PermissionAlter) }
-	if p.CreateTable.ValueBool() { out = append(out, lftypes.PermissionCreateTable) }
-	if p.Describe.ValueBool()    { out = append(out, lftypes.PermissionDescribe) }
-	if p.Drop.ValueBool()        { out = append(out, lftypes.PermissionDrop) }
-	return out
-}
+	rv = rv.Elem()
+	t := rv.Type()
 
-// tablePermsToAPI converts to an API permission list.
-// all=true sends ALL directly; individual flags collapse to ALL when every one is set.
-func tablePermsToAPI(p *TablePermissions) []lftypes.Permission {
-	if p == nil {
-		return nil
+	allField := rv.FieldByName("All")
+	if allField.IsValid() {
+		if b, ok := allField.Interface().(types.Bool); ok && b.ValueBool() {
+			return []lftypes.Permission{lftypes.PermissionAll}
+		}
 	}
-	if p.All.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
-	}
-	if p.Alter.ValueBool() && p.Delete.ValueBool() && p.Describe.ValueBool() &&
-		p.Drop.ValueBool() && p.Insert.ValueBool() && p.Select.ValueBool() {
-		return []lftypes.Permission{lftypes.PermissionAll}
-	}
+
 	var out []lftypes.Permission
-	if p.Alter.ValueBool()    { out = append(out, lftypes.PermissionAlter) }
-	if p.Delete.ValueBool()   { out = append(out, lftypes.PermissionDelete) }
-	if p.Describe.ValueBool() { out = append(out, lftypes.PermissionDescribe) }
-	if p.Drop.ValueBool()     { out = append(out, lftypes.PermissionDrop) }
-	if p.Insert.ValueBool()   { out = append(out, lftypes.PermissionInsert) }
-	if p.Select.ValueBool()   { out = append(out, lftypes.PermissionSelect) }
+	for i := 0; i < rv.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("tfsdk")
+		if tag == "-" || tag == "all" {
+			continue
+		}
+		perm, ok := lfPermMap[tag]
+		if !ok {
+			continue
+		}
+		if b, ok := rv.Field(i).Interface().(types.Bool); ok && b.ValueBool() {
+			out = append(out, perm)
+		}
+	}
 	return out
 }
 

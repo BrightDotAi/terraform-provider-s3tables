@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	lakeformation "github.com/aws/aws-sdk-go-v2/service/lakeformation"
 	lftypes "github.com/aws/aws-sdk-go-v2/service/lakeformation/types"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -129,7 +131,7 @@ func TestCatalogPermsToAPI(t *testing.T) {
 			want: []lftypes.Permission{lftypes.PermissionAlter, lftypes.PermissionDescribe},
 		},
 		{
-			name: "all_individual_true_collapses_to_ALL",
+			name: "all_individual_true_returns_each_perm",
 			input: &CatalogPermissions{
 				Alter:          types.BoolValue(true),
 				CreateCatalog:  types.BoolValue(true),
@@ -137,14 +139,18 @@ func TestCatalogPermsToAPI(t *testing.T) {
 				Describe:       types.BoolValue(true),
 				Drop:           types.BoolValue(true),
 			},
-			want: []lftypes.Permission{lftypes.PermissionAll},
+			want: []lftypes.Permission{
+				lftypes.PermissionAlter, lftypes.PermissionCreateCatalog,
+				lftypes.PermissionCreateDatabase, lftypes.PermissionDescribe,
+				lftypes.PermissionDrop,
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := catalogPermsToAPI(tt.input)
+			got := permsToAPI(tt.input)
 			if !permsEqual(got, tt.want) {
-				t.Errorf("catalogPermsToAPI() = %v, want %v", got, tt.want)
+				t.Errorf("permsToAPI() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -169,21 +175,24 @@ func TestDatabasePermsToAPI(t *testing.T) {
 			want:  []lftypes.Permission{lftypes.PermissionCreateTable, lftypes.PermissionDrop},
 		},
 		{
-			name: "all_individual_true_collapses_to_ALL",
+			name: "all_individual_true_returns_each_perm",
 			input: &DatabasePermissions{
 				Alter:       types.BoolValue(true),
 				CreateTable: types.BoolValue(true),
 				Describe:    types.BoolValue(true),
 				Drop:        types.BoolValue(true),
 			},
-			want: []lftypes.Permission{lftypes.PermissionAll},
+			want: []lftypes.Permission{
+				lftypes.PermissionAlter, lftypes.PermissionCreateTable,
+				lftypes.PermissionDescribe, lftypes.PermissionDrop,
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := databasePermsToAPI(tt.input)
+			got := permsToAPI(tt.input)
 			if !permsEqual(got, tt.want) {
-				t.Errorf("databasePermsToAPI() = %v, want %v", got, tt.want)
+				t.Errorf("permsToAPI() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -219,7 +228,7 @@ func TestTablePermsToAPI(t *testing.T) {
 			want: []lftypes.Permission{lftypes.PermissionDelete, lftypes.PermissionInsert},
 		},
 		{
-			name: "all_individual_true_collapses_to_ALL",
+			name: "all_individual_true_returns_each_perm",
 			input: &TablePermissions{
 				Alter:    types.BoolValue(true),
 				Delete:   types.BoolValue(true),
@@ -228,14 +237,17 @@ func TestTablePermsToAPI(t *testing.T) {
 				Insert:   types.BoolValue(true),
 				Select:   types.BoolValue(true),
 			},
-			want: []lftypes.Permission{lftypes.PermissionAll},
+			want: []lftypes.Permission{
+				lftypes.PermissionAlter, lftypes.PermissionDelete, lftypes.PermissionDescribe,
+				lftypes.PermissionDrop, lftypes.PermissionInsert, lftypes.PermissionSelect,
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tablePermsToAPI(tt.input)
+			got := permsToAPI(tt.input)
 			if !permsEqual(got, tt.want) {
-				t.Errorf("tablePermsToAPI() = %v, want %v", got, tt.want)
+				t.Errorf("permsToAPI() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -561,19 +573,19 @@ func TestNoDriftForOmittedPermissions(t *testing.T) {
 //     false when ALL is revoked externally (triggering an Update to re-grant).
 func TestAllShorthand(t *testing.T) {
 	t.Run("catalog_all_true_sends_ALL_to_api", func(t *testing.T) {
-		got := catalogPermsToAPI(&CatalogPermissions{All: types.BoolValue(true)})
+		got := permsToAPI(&CatalogPermissions{All: types.BoolValue(true)})
 		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
 			t.Errorf("catalogPermsToAPI all=true = %v, want [ALL]", got)
 		}
 	})
 	t.Run("database_all_true_sends_ALL_to_api", func(t *testing.T) {
-		got := databasePermsToAPI(&DatabasePermissions{All: types.BoolValue(true)})
+		got := permsToAPI(&DatabasePermissions{All: types.BoolValue(true)})
 		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
 			t.Errorf("databasePermsToAPI all=true = %v, want [ALL]", got)
 		}
 	})
 	t.Run("table_all_true_sends_ALL_to_api", func(t *testing.T) {
-		got := tablePermsToAPI(&TablePermissions{All: types.BoolValue(true)})
+		got := permsToAPI(&TablePermissions{All: types.BoolValue(true)})
 		if !permsEqual(got, []lftypes.Permission{lftypes.PermissionAll}) {
 			t.Errorf("tablePermsToAPI all=true = %v, want [ALL]", got)
 		}
@@ -846,7 +858,8 @@ func TestGrantAll(t *testing.T) {
 		}
 	})
 
-	t.Run("all_permissions_collapse_to_ALL_in_api_call", func(t *testing.T) {
+	t.Run("all_individual_true_sends_each_perm", func(t *testing.T) {
+		// Validation prevents this config in practice; permsToAPI no longer collapses.
 		mock := &mockLFClient{}
 		data := &LakeFormationPermissionsResourceModel{
 			Principal: types.StringValue(principal),
@@ -880,8 +893,12 @@ func TestGrantAll(t *testing.T) {
 		if call == nil {
 			t.Fatal("expected GrantPermissions call for table resource")
 		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionAll}) {
-			t.Errorf("all individual table perms should collapse to ALL, got %v", call.Permissions)
+		want := []lftypes.Permission{
+			lftypes.PermissionAlter, lftypes.PermissionDelete, lftypes.PermissionDescribe,
+			lftypes.PermissionDrop, lftypes.PermissionInsert, lftypes.PermissionSelect,
+		}
+		if !permsEqual(call.Permissions, want) {
+			t.Errorf("permissions = %v, want %v", call.Permissions, want)
 		}
 	})
 }
@@ -1485,6 +1502,110 @@ func TestRevokeForUpdate(t *testing.T) {
 			t.Error("expected revoke call for old (absent from plan)")
 		} else if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDrop}) {
 			t.Errorf("old revoked = %v, want [DROP]", call.Permissions)
+		}
+	})
+}
+
+// ── checkNoImplicitAll ────────────────────────────────────────────────────────
+
+func TestCheckNoImplicitAll(t *testing.T) {
+	check := func(p any) bool {
+		var diags diag.Diagnostics
+		checkNoImplicitAll(p, path.Root("permissions"), &diags)
+		return diags.HasError()
+	}
+
+	t.Run("nil_no_error", func(t *testing.T) {
+		if check((*CatalogPermissions)(nil)) {
+			t.Error("nil pointer: expected no error")
+		}
+	})
+
+	t.Run("empty_struct_no_error", func(t *testing.T) {
+		if check(&CatalogPermissions{}) {
+			t.Error("empty struct: expected no error")
+		}
+	})
+
+	t.Run("all_true_no_error", func(t *testing.T) {
+		// Explicitly setting all = true is always valid.
+		if check(&CatalogPermissions{All: types.BoolValue(true)}) {
+			t.Error("all=true: expected no error")
+		}
+	})
+
+	t.Run("partial_catalog_no_error", func(t *testing.T) {
+		p := &CatalogPermissions{Alter: types.BoolValue(true), Describe: types.BoolValue(true)}
+		if check(p) {
+			t.Error("partial catalog subset: expected no error")
+		}
+	})
+
+	t.Run("all_individual_catalog_error", func(t *testing.T) {
+		p := &CatalogPermissions{
+			Alter:          types.BoolValue(true),
+			CreateCatalog:  types.BoolValue(true),
+			CreateDatabase: types.BoolValue(true),
+			Describe:       types.BoolValue(true),
+			Drop:           types.BoolValue(true),
+		}
+		if !check(p) {
+			t.Error("all individual catalog perms set: expected error")
+		}
+	})
+
+	t.Run("partial_database_no_error", func(t *testing.T) {
+		p := &DatabasePermissions{CreateTable: types.BoolValue(true), Describe: types.BoolValue(true)}
+		if check(p) {
+			t.Error("partial database subset: expected no error")
+		}
+	})
+
+	t.Run("all_individual_database_error", func(t *testing.T) {
+		p := &DatabasePermissions{
+			Alter:       types.BoolValue(true),
+			CreateTable: types.BoolValue(true),
+			Describe:    types.BoolValue(true),
+			Drop:        types.BoolValue(true),
+		}
+		if !check(p) {
+			t.Error("all individual database perms set: expected error")
+		}
+	})
+
+	t.Run("partial_table_no_error", func(t *testing.T) {
+		p := &TablePermissions{Select: types.BoolValue(true), Describe: types.BoolValue(true)}
+		if check(p) {
+			t.Error("partial table subset: expected no error")
+		}
+	})
+
+	t.Run("all_individual_table_error", func(t *testing.T) {
+		p := &TablePermissions{
+			Alter:    types.BoolValue(true),
+			Delete:   types.BoolValue(true),
+			Describe: types.BoolValue(true),
+			Drop:     types.BoolValue(true),
+			Insert:   types.BoolValue(true),
+			Select:   types.BoolValue(true),
+		}
+		if !check(p) {
+			t.Error("all individual table perms set: expected error")
+		}
+	})
+
+	t.Run("one_below_full_table_no_error", func(t *testing.T) {
+		// All but one field set — strict subset, so no error.
+		p := &TablePermissions{
+			Alter:    types.BoolValue(true),
+			Delete:   types.BoolValue(true),
+			Describe: types.BoolValue(true),
+			Drop:     types.BoolValue(true),
+			Insert:   types.BoolValue(true),
+			// Select omitted
+		}
+		if check(p) {
+			t.Error("five of six table perms set: expected no error")
 		}
 	})
 }
