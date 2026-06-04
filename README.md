@@ -427,7 +427,7 @@ resource "bai_lakeformation_permissions" "db_full_access" {
 
 #### Example — Using `all = true` shorthand
 
-Set `all = true` to grant all permissions for that resource level at once, instead of listing individual flags. This is equivalent to specifying every individual permission as `true`.
+Set `all = true` to grant all permissions for that resource level at once, instead of listing individual flags.
 
 ```hcl
 resource "bai_lakeformation_permissions" "full_access" {
@@ -455,6 +455,44 @@ resource "bai_lakeformation_permissions" "full_access" {
       }
     }
   }
+}
+```
+
+#### `all` validation rules
+
+Two constraints are enforced at plan time for every `permissions` and `grantable_permissions` block:
+
+1. **`all` is exclusive** — if `all = true`, no individual permission flag may also be set to `true`. Setting `all = true` alongside `select = true` (for example) is an error.
+
+2. **No implicit `all`** — if you want to grant every permission you must use `all = true`. Setting every individual flag to `true` without `all = true` is also an error. This prevents ambiguity and makes intent explicit.
+
+```hcl
+# Error: all = true mixed with individual flags
+permissions {
+  all    = true
+  select = true  # not allowed alongside all = true
+}
+
+# Error: every individual flag set without all = true
+permissions {
+  alter    = true
+  delete   = true
+  describe = true
+  drop     = true
+  insert   = true
+  select   = true
+  # should be: all = true
+}
+
+# Correct: use all = true to grant every permission
+permissions {
+  all = true
+}
+
+# Correct: use a strict subset of individual flags
+permissions {
+  select   = true
+  describe = true
 }
 ```
 
@@ -575,7 +613,7 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 
 | Attribute | Description |
 |-----------|-------------|
-| `all` | Grant all catalog permissions. Mutually exclusive with individual attributes. |
+| `all` | Grant all catalog permissions. Cannot be combined with individual flags; use this or a strict subset, never all individual flags without `all`. |
 | `alter` | `ALTER` |
 | `create_catalog` | `CREATE_CATALOG` |
 | `create_database` | `CREATE_DATABASE` |
@@ -586,7 +624,7 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 
 | Attribute | Description |
 |-----------|-------------|
-| `all` | Grant all database permissions. Mutually exclusive with individual attributes. |
+| `all` | Grant all database permissions. Cannot be combined with individual flags; use this or a strict subset, never all individual flags without `all`. |
 | `alter` | `ALTER` |
 | `create_table` | `CREATE_TABLE` |
 | `describe` | `DESCRIBE` |
@@ -596,7 +634,7 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 
 | Attribute | Description |
 |-----------|-------------|
-| `all` | Grant all table permissions. Mutually exclusive with individual attributes. |
+| `all` | Grant all table permissions. Cannot be combined with individual flags; use this or a strict subset, never all individual flags without `all`. |
 | `alter` | `ALTER` |
 | `delete` | `DELETE` |
 | `describe` | `DESCRIBE` |
