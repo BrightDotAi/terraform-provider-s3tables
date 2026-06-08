@@ -95,6 +95,7 @@ func loadAWSConfig(ctx context.Context, data BrightAIProviderModel) (aws.Config,
 func (p *BrightAIProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewS3TableResource,
+		NewLakeFormationPermissionsResource,
 	}
 }
 
