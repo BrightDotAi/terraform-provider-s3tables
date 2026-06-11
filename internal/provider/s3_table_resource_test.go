@@ -710,7 +710,7 @@ func TestApplyPartitionChanges(t *testing.T) {
 
 func TestCheckPropChanges(t *testing.T) {
 	pm := func(name, value string) PropertyModel {
-		return PropertyModel{Name: types.StringValue(name), Value: types.StringValue(value)}
+		return PropertyModel{Name: types.StringValue(name), Value: types.StringValue(value), Type: types.StringValue("text")}
 	}
 
 	tests := []struct {
@@ -734,4 +734,65 @@ func TestCheckPropChanges(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckPropValueEqual(t *testing.T) {
+	tests := []struct {
+		name     string
+		stateVal string
+		planVal  string
+		planType string
+		wantErr  bool
+	}{
+		{"text_equal", "foo", "foo", "text", false},
+		{"text_different", "foo", "bar", "text", true},
+		{"empty_type_equal", "foo", "foo", "", false},
+		{"empty_type_different", "foo", "bar", "", true},
+		{"json_key_order_differs", `{"a":1,"b":2}`, `{"b":2,"a":1}`, "json", false},
+		{"json_whitespace_differs", `{"x":1}`, `{ "x" : 1 }`, "json", false},
+		{"json_value_differs", `{"a":1}`, `{"a":2}`, "json", true},
+		{"json_invalid_state", `not-json`, `{"a":1}`, "json", true},
+		{"json_invalid_plan", `{"a":1}`, `not-json`, "json", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkPropValueEqual("prop", tt.stateVal, tt.planVal, tt.planType)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkPropValueEqual() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestUpdate_PropertyChanges tests the property-change detection logic exercised
+// by the Update method. State properties always carry type="text" (as returned by
+// Read); plan properties may carry type="json". The Update path calls
+// checkPropChanges, which must not treat equivalent JSON as a drift error.
+func TestUpdate_PropertyChanges(t *testing.T) {
+	stateText := func(name, value string) PropertyModel {
+		return PropertyModel{Name: types.StringValue(name), Value: types.StringValue(value), Type: types.StringValue("text")}
+	}
+	planJSON := func(name, value string) PropertyModel {
+		return PropertyModel{Name: types.StringValue(name), Value: types.StringValue(value), Type: types.StringValue("json")}
+	}
+
+	t.Run("json_property_same_value_different_formatting_no_error", func(t *testing.T) {
+		// Positive: plan JSON is semantically identical to state value but formatted
+		// differently (key order, whitespace). Update must not report a change.
+		state := []PropertyModel{stateText("cfg", `{"b":2,"a":1}`)}
+		plan := []PropertyModel{planJSON("cfg", `{"a": 1, "b": 2}`)}
+		if err := checkPropChanges(state, plan); err != nil {
+			t.Errorf("expected no error for semantically equal JSON, got: %v", err)
+		}
+	})
+
+	t.Run("json_property_different_value_raises_not_supported_error", func(t *testing.T) {
+		// Negative: plan JSON encodes different data from state. Update must return
+		// an error (property changes are not supported).
+		state := []PropertyModel{stateText("cfg", `{"a":1}`)}
+		plan := []PropertyModel{planJSON("cfg", `{"a":2}`)}
+		if err := checkPropChanges(state, plan); err == nil {
+			t.Error("expected error for semantically different JSON, got nil")
+		}
+	})
 }

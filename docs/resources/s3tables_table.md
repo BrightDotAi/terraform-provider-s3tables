@@ -63,3 +63,7 @@ Required:
 
 - `name` (String) Property name.
 - `value` (String) Property value.
+
+Optional:
+
+- `type` (String) Property value type: `text` (default) or `json`.

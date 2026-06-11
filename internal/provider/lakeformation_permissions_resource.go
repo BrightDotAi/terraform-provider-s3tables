@@ -604,6 +604,8 @@ func grantAll(ctx context.Context, client lfClientIface, data *LakeFormationPerm
 // revokeForUpdate selectively revokes state permissions for resources where plan explicitly declares
 // (non-nil) permissions or grantable_permissions. Resources absent from the plan are fully revoked.
 // Resources whose fields are nil in the plan are left untouched for those fields.
+// Each revoke is preceded by a ListPermissions check; resources on which the principal currently
+// holds no permissions are skipped to avoid spurious "no permissions to revoke" errors from AWS.
 func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *LakeFormationPermissionsResourceModel) error {
 	if state.Catalog == nil || plan.Catalog == nil {
 		return nil
@@ -618,7 +620,7 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 	if plan.Catalog.GrantablePermissions != nil {
 		catG = permsToAPI(state.Catalog.GrantablePermissions)
 	}
-	if err := revokeLFPerms(ctx, client, principal,
+	if err := revokeIfPermitted(ctx, client, principal,
 		&lftypes.Resource{Catalog: &lftypes.CatalogResource{}},
 		catP, catG); err != nil {
 		return fmt.Errorf("catalog: %w", err)
@@ -646,7 +648,7 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 		if !inPlan || plDB.GrantablePermissions != nil {
 			dbG = permsToAPI(stDB.GrantablePermissions)
 		}
-		if err := revokeLFPerms(ctx, client, principal, dbRes, dbP, dbG); err != nil {
+		if err := revokeIfPermitted(ctx, client, principal, dbRes, dbP, dbG); err != nil {
 			return fmt.Errorf("database %s: %w", name, err)
 		}
 
@@ -674,7 +676,7 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 			if !tblInPlan || plTbl.GrantablePermissions != nil {
 				tG = permsToAPI(stTbl.GrantablePermissions)
 			}
-			if err := revokeLFPerms(ctx, client, principal, tblRes, tP, tG); err != nil {
+			if err := revokeIfPermitted(ctx, client, principal, tblRes, tP, tG); err != nil {
 				return fmt.Errorf("table %s.%s: %w", name, tblName, err)
 			}
 		}
@@ -699,12 +701,28 @@ func revokeForUpdate(ctx context.Context, client lfClientIface, state, plan *Lak
 					wG = permsToAPI(stDB.Wildcard.GrantablePermissions)
 				}
 			}
-			if err := revokeLFPerms(ctx, client, principal, wcRes, wP, wG); err != nil {
+			if err := revokeIfPermitted(ctx, client, principal, wcRes, wP, wG); err != nil {
 				return fmt.Errorf("wildcard in database %s: %w", name, err)
 			}
 		}
 	}
 	return nil
+}
+
+// revokeIfPermitted calls ListPermissions first and skips the revoke when the principal
+// holds no active permissions on res, avoiding AWS errors for non-existent grants.
+func revokeIfPermitted(ctx context.Context, client lfClientIface, principal string, res *lftypes.Resource, perms, grantPerms []lftypes.Permission) error {
+	if len(perms) == 0 && len(grantPerms) == 0 {
+		return nil
+	}
+	curP, curG, err := listLFPerms(ctx, client, principal, res)
+	if err != nil {
+		return err
+	}
+	if len(curP) == 0 && len(curG) == 0 {
+		return nil
+	}
+	return revokeLFPerms(ctx, client, principal, res, perms, grantPerms)
 }
 
 // grantLFPerms calls GrantPermissions for a single principal/resource pair; no-ops when both lists are empty.

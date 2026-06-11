@@ -25,10 +25,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -36,6 +38,7 @@ import (
 var _ resource.Resource = &S3TableResource{}
 var _ resource.ResourceWithImportState = &S3TableResource{}
 
+// NewS3TableResource returns a new S3TableResource instance for registration with the Terraform provider.
 func NewS3TableResource() resource.Resource {
 	return &S3TableResource{}
 }
@@ -86,14 +89,19 @@ type PartitionModel struct {
 
 // PropertyModel represents one field in the Iceberg property spec.
 type PropertyModel struct {
-	Name types.String `tfsdk:"name"`
+	Name  types.String `tfsdk:"name"`
 	Value types.String `tfsdk:"value"`
+	Type  types.String `tfsdk:"type"`
 }
 
+// Metadata sets the Terraform type name for this resource to `{provider}_s3tables_table`.
 func (r *S3TableResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_s3tables_table"
 }
 
+// Schema declares the Terraform schema for the resource, covering top-level attributes
+// (warehouse, region, namespace, name, format_version) and the field, partition, and
+// property nested blocks.
 func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages an S3 Tables Iceberg table via the AWS Glue catalog.",
@@ -207,6 +215,15 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							MarkdownDescription: "Property value.",
 							Required:            true,
 						},
+						"type": schema.StringAttribute{
+							MarkdownDescription: "Property value type: `text` (default) or `json`.",
+							Optional:            true,
+							Computed:            true,
+							Default:             stringdefault.StaticString("text"),
+							Validators: []validator.String{
+								stringvalidator.OneOf("text", "json"),
+							},
+						},
 					},
 				},
 			},
@@ -214,6 +231,8 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 	}
 }
 
+// Configure extracts the aws.Config from the provider-supplied data and stores it
+// on the resource so that CRUD operations can open a catalog connection.
 func (r *S3TableResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -230,6 +249,8 @@ func (r *S3TableResource) Configure(ctx context.Context, req resource.ConfigureR
 	r.awsCfg = cfg
 }
 
+// Create builds the Iceberg schema, partition spec, and properties from the plan and
+// creates the table in the S3 Tables catalog, then writes the resulting state back to Terraform.
 func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data S3TableResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -288,6 +309,8 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 }
 
 
+// Read fetches the current table state from the S3 Tables catalog and refreshes
+// Terraform state. If the table no longer exists the resource is removed from state.
 func (r *S3TableResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data S3TableResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -322,6 +345,9 @@ func (r *S3TableResource) Read(ctx context.Context, req resource.ReadRequest, re
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+// Update applies schema and partition-spec changes from the plan to the existing table.
+// Property changes are not supported by the Iceberg catalog and will be returned as an error.
+// State is refreshed from the catalog after the transaction commits.
 func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var state, plan S3TableResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -387,6 +413,8 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 }
 
 
+// Delete purges the Iceberg table from the S3 Tables catalog. A not-found error is
+// treated as a successful deletion so that partially destroyed resources can be cleaned up.
 func (r *S3TableResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data S3TableResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -449,6 +477,8 @@ type metadataPatchTransport struct {
 	base http.RoundTripper
 }
 
+// RoundTrip executes the underlying HTTP request and, on success, patches the
+// response body to remove v3-only metadata fields that would be rejected by iceberg-go.
 func (t *metadataPatchTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -540,6 +570,9 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 	return &nestedField, nil
 }
 
+// getFieldDefault validates that at most one of default_string, default_number, or
+// default_bool is set and returns the corresponding Go-native value for the field's
+// Iceberg type. Returns nil when no default is configured.
 func (f *FieldModel) getFieldDefault() (any, error) {
 	default_count := 0
 	if !f.DefaultString.IsNull() && !f.DefaultString.IsUnknown() {default_count++}
@@ -594,6 +627,8 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 
 
 
+// anyToIcebergLit converts a Go-native default value to the Iceberg Literal required
+// by the schema API. Returns nil for a nil input (no default configured).
 func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
 	if d == nil {
 		// option not specified
@@ -726,6 +761,9 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 	return &iproperties, nil
 }
 
+// icebergToFieldModel converts an Iceberg NestedField to a Terraform FieldModel,
+// mapping the write-default value to the appropriate default_string, default_number,
+// or default_bool attribute.
 func  icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
 	model := FieldModel{
 			Name:     types.StringValue(f.Name),
@@ -822,6 +860,7 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 			models = append(models, PropertyModel{
 				Name:  types.StringValue(name),
 				Value: types.StringValue(props[name]),
+				Type:  types.StringValue("text"),
 			})
 		}
 	}
@@ -854,10 +893,12 @@ type tableTransaction interface {
 // txnAdapter wraps *itable.Transaction to satisfy tableTransaction.
 type txnAdapter struct{ t *itable.Transaction }
 
+// UpdateSchema delegates to the underlying transaction, satisfying the tableTransaction interface.
 func (a *txnAdapter) UpdateSchema(caseSensitive, allowIncompatible bool) schemaUpdater {
 	return a.t.UpdateSchema(caseSensitive, allowIncompatible)
 }
 
+// UpdateSpec delegates to the underlying transaction, satisfying the tableTransaction interface.
 func (a *txnAdapter) UpdateSpec(caseSensitive bool) partitionUpdater {
 	return a.t.UpdateSpec(caseSensitive)
 }
@@ -1002,31 +1043,57 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 // checkPropChanges - returns error if properties are different
 // Note: table property updates not supported in icebert-go package
 func checkPropChanges(stateProps, planProps []PropertyModel) error {
-	// Build a map of current props by name.
 	current := make(map[string]PropertyModel)
 	for _, p := range stateProps {
 		current[p.Name.ValueString()] = p
 	}
 
-	// Build a set of plan partition field names.
 	plan := make(map[string]PropertyModel)
 	for _, p := range planProps {
 		plan[p.Name.ValueString()] = p
 	}
 
-	// check for changes
 	if len(current) != len(plan) {
 		return fmt.Errorf("differing properties count: %d vs %d", len(current), len(plan))
 	}
 	for name, pp := range plan {
-		if sp, exists := current[name]; !exists || pp != sp {
+		sp, exists := current[name]
+		if !exists {
 			return fmt.Errorf("differing property: %v", name)
+		}
+		if err := checkPropValueEqual(name, sp.Value.ValueString(), pp.Value.ValueString(), pp.Type.ValueString()); err != nil {
+			return err
 		}
 	}
 	for name := range current {
 		if _, exists := plan[name]; !exists {
 			return fmt.Errorf("missing property: %v", name)
 		}
+	}
+	return nil
+}
+
+// checkPropValueEqual compares a state and plan property value.
+// When planType is "json", both values are decoded and compared structurally
+// so that equivalent JSON with different whitespace/key ordering is not
+// treated as a change. State type is always "text" so the type field itself
+// is not compared.
+func checkPropValueEqual(name, stateVal, planVal, planType string) error {
+	if planType == "json" {
+		var stateDecoded, planDecoded any
+		if err := json.Unmarshal([]byte(stateVal), &stateDecoded); err != nil {
+			return fmt.Errorf("property %q: state value is not valid JSON: %w", name, err)
+		}
+		if err := json.Unmarshal([]byte(planVal), &planDecoded); err != nil {
+			return fmt.Errorf("property %q: plan value is not valid JSON: %w", name, err)
+		}
+		if !reflect.DeepEqual(stateDecoded, planDecoded) {
+			return fmt.Errorf("differing property: %v", name)
+		}
+		return nil
+	}
+	if stateVal != planVal {
+		return fmt.Errorf("differing property: %v", name)
 	}
 	return nil
 }
