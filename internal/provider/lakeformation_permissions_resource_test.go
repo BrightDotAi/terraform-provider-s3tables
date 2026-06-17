@@ -698,15 +698,16 @@ func TestGrantAll(t *testing.T) {
 	})
 
 	t.Run("catalog_grantable_permissions", func(t *testing.T) {
+		// ModifyPlan sets permissions = grantable_permissions when only grantable_permissions
+		// is configured; by the time grantAll runs both fields are non-nil and equal.
 		mock := &mockLFClient{}
 		data := &LakeFormationPermissionsResourceModel{
 			Principal: types.StringValue(principal),
 			Region:    types.StringValue("us-east-1"),
 			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				GrantablePermissions: &CatalogPermissions{
-					Describe: types.BoolValue(true),
-				},
+				ID:                   types.StringValue(catalogID),
+				Permissions:          &CatalogPermissions{Describe: types.BoolValue(true)},
+				GrantablePermissions: &CatalogPermissions{Describe: types.BoolValue(true)},
 			},
 		}
 		if err := grantAll(ctx, mock, data); err != nil {
@@ -716,8 +717,84 @@ func TestGrantAll(t *testing.T) {
 		if call == nil {
 			t.Fatal("expected GrantPermissions call for catalog resource")
 		}
-		if len(call.Permissions) != 0 {
-			t.Errorf("permissions should be empty, got %v", call.Permissions)
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("permissions = %v, want [DESCRIBE]", call.Permissions)
+		}
+		if !permsEqual(call.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("grantable = %v, want [DESCRIBE]", call.PermissionsWithGrantOption)
+		}
+	})
+
+	t.Run("grantable_only_table_permissions_equal", func(t *testing.T) {
+		// When only grantable_permissions is configured, ModifyPlan sets permissions = grantable_permissions.
+		// Both fields are equal in the model that reaches grantAll.
+		mock := &mockLFClient{}
+		data := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Region:    types.StringValue("us-east-1"),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{
+					{
+						Name: types.StringValue("analytics"),
+						Table: []TablePermModel{
+							{
+								Name:                 types.StringValue("events"),
+								Permissions:          &TablePermissions{Select: types.BoolValue(true)},
+								GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := grantAll(ctx, mock, data); err != nil {
+			t.Fatalf("grantAll() error: %v", err)
+		}
+		call := findGrantCall(mock.grantCalls, isTableResource("analytics", "events"))
+		if call == nil {
+			t.Fatal("expected GrantPermissions call for table resource")
+		}
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("permissions = %v, want [SELECT]", call.Permissions)
+		}
+		if !permsEqual(call.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("grantable = %v, want [SELECT]", call.PermissionsWithGrantOption)
+		}
+	})
+
+	t.Run("permissions_proper_superset_of_grantable", func(t *testing.T) {
+		// permissions = {DESCRIBE, SELECT}, grantable = {DESCRIBE}
+		// The API must receive Permissions=[DESCRIBE,SELECT] and PermissionsWithGrantOption=[DESCRIBE].
+		mock := &mockLFClient{}
+		data := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Region:    types.StringValue("us-east-1"),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{
+					{
+						Name: types.StringValue("analytics"),
+						Table: []TablePermModel{
+							{
+								Name:                 types.StringValue("events"),
+								Permissions:          &TablePermissions{Describe: types.BoolValue(true), Select: types.BoolValue(true)},
+								GrantablePermissions: &TablePermissions{Describe: types.BoolValue(true)},
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := grantAll(ctx, mock, data); err != nil {
+			t.Fatalf("grantAll() error: %v", err)
+		}
+		call := findGrantCall(mock.grantCalls, isTableResource("analytics", "events"))
+		if call == nil {
+			t.Fatal("expected GrantPermissions call for table resource")
+		}
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe, lftypes.PermissionSelect}) {
+			t.Errorf("permissions = %v, want [DESCRIBE, SELECT]", call.Permissions)
 		}
 		if !permsEqual(call.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionDescribe}) {
 			t.Errorf("grantable = %v, want [DESCRIBE]", call.PermissionsWithGrantOption)
@@ -915,16 +992,14 @@ func TestGrantAll(t *testing.T) {
 
 // ── revokeAll ─────────────────────────────────────────────────────────────────
 
-// TestDelete exercises the delete path: revokeForUpdate(state, state) only revokes
-// resources where permissions or grantable_permissions are explicitly declared.
+// TestDelete exercises the delete path via deletePermissions.
 func TestDelete(t *testing.T) {
 	const principal = "arn:aws:iam::123456789012:role/TestRole"
 	const catalogID = "123456789012"
 	ctx := context.Background()
 
-	// Helper: simulate delete by calling revokeForUpdate with state as both arguments.
 	del := func(mock *mockLFClient, state *LakeFormationPermissionsResourceModel) error {
-		return revokeForUpdate(ctx, mock, state, state)
+		return deletePermissions(ctx, mock, state)
 	}
 
 	t.Run("catalog_permissions_revoked", func(t *testing.T) {
@@ -1007,6 +1082,41 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("nil_db_permissions_but_table_permissions_revoked", func(t *testing.T) {
+		// DB-level permissions nil → no DB revoke; table-level permissions set → table revoke fires.
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{
+					{
+						Name: types.StringValue("analytics"), // Permissions nil at DB level
+						Table: []TablePermModel{
+							{
+								Name:        types.StringValue("events"),
+								Permissions: &TablePermissions{Select: types.BoolValue(true)},
+							},
+						},
+					},
+				},
+			},
+		}
+		if err := del(mock, state); err != nil {
+			t.Fatalf("delete error: %v", err)
+		}
+		if call := findRevokeCall(mock.revokeCalls, isDatabaseResource("analytics")); call != nil {
+			t.Errorf("expected no revoke call for database with nil permissions; got %+v", call)
+		}
+		call := findRevokeCall(mock.revokeCalls, isTableResource("analytics", "events"))
+		if call == nil {
+			t.Fatal("expected RevokePermissions call for table despite nil db permissions")
+		}
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("table permissions = %v, want [SELECT]", call.Permissions)
+		}
+	})
+
 	t.Run("named_table_permissions_revoked", func(t *testing.T) {
 		mock := mockLFClientWithPerms()
 		state := &LakeFormationPermissionsResourceModel{
@@ -1067,8 +1177,9 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("grantable_only_revokes_grant_option_field", func(t *testing.T) {
-		// Table has only GrantablePermissions declared; only PermissionsWithGrantOption should be revoked.
+	t.Run("grantable_only_revokes_perm_and_grant_option", func(t *testing.T) {
+		// State has permissions = grantable_permissions = {SELECT} (as ModifyPlan would have set them).
+		// Both Permissions and PermissionsWithGrantOption must be revoked.
 		mock := mockLFClientWithPerms()
 		state := &LakeFormationPermissionsResourceModel{
 			Principal: types.StringValue(principal),
@@ -1080,6 +1191,7 @@ func TestDelete(t *testing.T) {
 						Table: []TablePermModel{
 							{
 								Name:                 types.StringValue("events"),
+								Permissions:          &TablePermissions{Select: types.BoolValue(true)},
 								GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
 							},
 						},
@@ -1094,8 +1206,8 @@ func TestDelete(t *testing.T) {
 		if call == nil {
 			t.Fatal("expected RevokePermissions call for named table")
 		}
-		if len(call.Permissions) != 0 {
-			t.Errorf("Permissions should be empty, got %v", call.Permissions)
+		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("Permissions = %v, want [SELECT]", call.Permissions)
 		}
 		if !permsEqual(call.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionSelect}) {
 			t.Errorf("PermissionsWithGrantOption = %v, want [SELECT]", call.PermissionsWithGrantOption)
@@ -1103,460 +1215,13 @@ func TestDelete(t *testing.T) {
 	})
 }
 
-// ── revokeForUpdate ───────────────────────────────────────────────────────────
 
-func TestRevokeForUpdate(t *testing.T) {
-	const principal = "arn:aws:iam::123456789012:role/TestRole"
-	const catalogID = "123456789012"
-	ctx := context.Background()
+// ── checkPerms ───────────────────────────────────────────────────────────────
 
-	t.Run("omit_catalog_permissions_no_revoke", func(t *testing.T) {
-		// State has catalog permissions; plan omits them (nil). They must not be revoked.
-		mock := &mockLFClient{}
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID:          types.StringValue(catalogID),
-				Permissions: &CatalogPermissions{CreateDatabase: types.BoolValue(true)},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				// Permissions nil — omitted
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// revokeLFPerms is a no-op when both lists are nil/empty, so no API call is made.
-		if call := findRevokeCall(mock.revokeCalls, isCatalogResource); call != nil {
-			t.Errorf("expected no revoke call for catalog; got %+v", call)
-		}
-	})
-
-	t.Run("explicit_empty_catalog_permissions_revokes_state", func(t *testing.T) {
-		// Plan has an explicit (non-nil but empty) permissions block → revoke what is in state.
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID:          types.StringValue(catalogID),
-				Permissions: &CatalogPermissions{Describe: types.BoolValue(true)},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID:          types.StringValue(catalogID),
-				Permissions: &CatalogPermissions{}, // explicit empty
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isCatalogResource)
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for catalog")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
-			t.Errorf("revoked = %v, want [DESCRIBE]", call.Permissions)
-		}
-	})
-
-	t.Run("omit_grantable_but_set_permissions", func(t *testing.T) {
-		// Plan sets permissions but omits grantable_permissions. Only permissions should be revoked.
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID:                   types.StringValue(catalogID),
-				Permissions:          &CatalogPermissions{Describe: types.BoolValue(true)},
-				GrantablePermissions: &CatalogPermissions{Describe: types.BoolValue(true)},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID:          types.StringValue(catalogID),
-				Permissions: &CatalogPermissions{Describe: types.BoolValue(true)},
-				// GrantablePermissions nil — omitted
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isCatalogResource)
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for catalog")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
-			t.Errorf("permissions = %v, want [DESCRIBE]", call.Permissions)
-		}
-		if len(call.PermissionsWithGrantOption) != 0 {
-			t.Errorf("grantable permissions should not be revoked, got %v", call.PermissionsWithGrantOption)
-		}
-	})
-
-	t.Run("omit_database_permissions_no_revoke", func(t *testing.T) {
-		// State has database permissions; plan has the same database but omits permissions.
-		mock := &mockLFClient{}
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:        types.StringValue("analytics"),
-						Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("analytics"),
-						// Permissions nil
-					},
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if call := findRevokeCall(mock.revokeCalls, isDatabaseResource("analytics")); call != nil {
-			t.Errorf("expected no revoke call for database; got %+v", call)
-		}
-	})
-
-	t.Run("explicit_empty_database_permissions_revokes_state", func(t *testing.T) {
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:        types.StringValue("analytics"),
-						Permissions: &DatabasePermissions{CreateTable: types.BoolValue(true)},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:        types.StringValue("analytics"),
-						Permissions: &DatabasePermissions{}, // explicit empty
-					},
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isDatabaseResource("analytics"))
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for database")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionCreateTable}) {
-			t.Errorf("revoked = %v, want [CREATE_TABLE]", call.Permissions)
-		}
-	})
-
-	t.Run("database_absent_from_plan_fully_revoked", func(t *testing.T) {
-		// State has "analytics" database; plan has no databases. The database must be revoked.
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:        types.StringValue("analytics"),
-						Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				// No databases
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isDatabaseResource("analytics"))
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for removed database")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
-			t.Errorf("revoked = %v, want [DESCRIBE]", call.Permissions)
-		}
-	})
-
-	t.Run("table_absent_from_plan_fully_revoked", func(t *testing.T) {
-		// State has table "events"; plan has the database but no tables.
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("analytics"),
-						Table: []TablePermModel{
-							{
-								Name:        types.StringValue("events"),
-								Permissions: &TablePermissions{Select: types.BoolValue(true)},
-							},
-						},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{Name: types.StringValue("analytics")},
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isTableResource("analytics", "events"))
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for removed table")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionSelect}) {
-			t.Errorf("revoked = %v, want [SELECT]", call.Permissions)
-		}
-	})
-
-	t.Run("omit_table_permissions_no_revoke", func(t *testing.T) {
-		// Table is still in plan but permissions block is nil — leave it alone.
-		mock := &mockLFClient{}
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("analytics"),
-						Table: []TablePermModel{
-							{
-								Name:        types.StringValue("events"),
-								Permissions: &TablePermissions{Select: types.BoolValue(true)},
-							},
-						},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("analytics"),
-						Table: []TablePermModel{
-							{Name: types.StringValue("events")}, // permissions nil
-						},
-					},
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if call := findRevokeCall(mock.revokeCalls, isTableResource("analytics", "events")); call != nil {
-			t.Errorf("expected no revoke call for table with nil permissions; got %+v", call)
-		}
-	})
-
-	t.Run("wildcard_absent_from_plan_revoked", func(t *testing.T) {
-		// State has wildcard; plan has the same database but no wildcard.
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("raw"),
-						Wildcard: &TablePermModel{
-							Permissions: &TablePermissions{Select: types.BoolValue(true)},
-						},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{Name: types.StringValue("raw")}, // wildcard nil
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		call := findRevokeCall(mock.revokeCalls, isWildcardResource("raw"))
-		if call == nil {
-			t.Fatal("expected RevokePermissions call for removed wildcard")
-		}
-		if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionSelect}) {
-			t.Errorf("revoked = %v, want [SELECT]", call.Permissions)
-		}
-	})
-
-	t.Run("omit_wildcard_permissions_no_revoke", func(t *testing.T) {
-		// Wildcard is in plan but its permissions block is nil — leave it alone.
-		mock := &mockLFClient{}
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name: types.StringValue("raw"),
-						Wildcard: &TablePermModel{
-							Permissions: &TablePermissions{Select: types.BoolValue(true)},
-						},
-					},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:     types.StringValue("raw"),
-						Wildcard: &TablePermModel{}, // present but permissions nil
-					},
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if call := findRevokeCall(mock.revokeCalls, isWildcardResource("raw")); call != nil {
-			t.Errorf("expected no revoke call for wildcard with nil permissions; got %+v", call)
-		}
-	})
-
-	t.Run("multiple_databases_independent_handling", func(t *testing.T) {
-		// "analytics" is in plan with explicit permissions (revoke + re-grant),
-		// "staging" is in plan with nil permissions (leave alone),
-		// "old" is absent from plan (fully revoke).
-		mock := mockLFClientWithPerms()
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{Name: types.StringValue("analytics"), Permissions: &DatabasePermissions{Describe: types.BoolValue(true)}},
-					{Name: types.StringValue("staging"), Permissions: &DatabasePermissions{Alter: types.BoolValue(true)}},
-					{Name: types.StringValue("old"), Permissions: &DatabasePermissions{Drop: types.BoolValue(true)}},
-				},
-			},
-		}
-		plan := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{Name: types.StringValue("analytics"), Permissions: &DatabasePermissions{CreateTable: types.BoolValue(true)}},
-					{Name: types.StringValue("staging")}, // permissions nil
-					// "old" absent
-				},
-			},
-		}
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		// analytics: permissions block present → revoke state permissions
-		if call := findRevokeCall(mock.revokeCalls, isDatabaseResource("analytics")); call == nil {
-			t.Error("expected revoke call for analytics")
-		} else if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
-			t.Errorf("analytics revoked = %v, want [DESCRIBE]", call.Permissions)
-		}
-
-		// staging: permissions nil → no revoke
-		if call := findRevokeCall(mock.revokeCalls, isDatabaseResource("staging")); call != nil {
-			t.Errorf("expected no revoke call for staging; got %+v", call)
-		}
-
-		// old: absent from plan → revoke
-		if call := findRevokeCall(mock.revokeCalls, isDatabaseResource("old")); call == nil {
-			t.Error("expected revoke call for old (absent from plan)")
-		} else if !permsEqual(call.Permissions, []lftypes.Permission{lftypes.PermissionDrop}) {
-			t.Errorf("old revoked = %v, want [DROP]", call.Permissions)
-		}
-	})
-
-	t.Run("skip_revoke_when_aws_has_no_permissions", func(t *testing.T) {
-		// State and plan both declare permissions, but ListPermissions returns nothing
-		// (permissions were revoked externally). revokeForUpdate must not call
-		// RevokePermissions and must not return an error.
-		mock := &mockLFClient{} // empty listResult → no current permissions
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog: &CatalogPermModel{
-				ID: types.StringValue(catalogID),
-				Database: []DatabasePermModel{
-					{
-						Name:        types.StringValue("analytics"),
-						Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
-						Table: []TablePermModel{
-							{
-								Name:        types.StringValue("events"),
-								Permissions: &TablePermissions{Select: types.BoolValue(true)},
-							},
-						},
-						Wildcard: &TablePermModel{
-							Permissions: &TablePermissions{Select: types.BoolValue(true)},
-						},
-					},
-				},
-			},
-		}
-		plan := state // same as state — plan declares the same permissions
-		if err := revokeForUpdate(ctx, mock, state, plan); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(mock.revokeCalls) != 0 {
-			t.Errorf("expected no RevokePermissions calls when AWS has no permissions; got %d call(s)", len(mock.revokeCalls))
-		}
-	})
-}
-
-// ── checkNoImplicitAll ────────────────────────────────────────────────────────
-
-func TestCheckNoImplicitAll(t *testing.T) {
+func TestCheckPerms(t *testing.T) {
 	check := func(p any) bool {
 		var diags diag.Diagnostics
-		checkNoImplicitAll(p, path.Root("permissions"), &diags)
+		checkPerms(p, path.Root("permissions"), &diags)
 		return diags.HasError()
 	}
 
@@ -1651,6 +1316,581 @@ func TestCheckNoImplicitAll(t *testing.T) {
 		}
 		if check(p) {
 			t.Error("five of six table perms set: expected no error")
+		}
+	})
+}
+
+// ── checkSupersetPerms ───────────────────────────────────────────────────────
+
+func TestCheckSupersetPerms(t *testing.T) {
+	check := func(perms, grantPerms any) bool {
+		var diags diag.Diagnostics
+		checkSupersetPerms(perms, grantPerms, path.Root("catalog"), &diags)
+		return diags.HasError()
+	}
+
+	t.Run("nil_perms_no_error", func(t *testing.T) {
+		// nil permissions will be computed — skip superset check.
+		if check((*TablePermissions)(nil), &TablePermissions{Select: types.BoolValue(true)}) {
+			t.Error("nil permissions: expected no error")
+		}
+	})
+
+	t.Run("nil_grantable_no_error", func(t *testing.T) {
+		if check(&TablePermissions{Select: types.BoolValue(true)}, (*TablePermissions)(nil)) {
+			t.Error("nil grantable_permissions: expected no error")
+		}
+	})
+
+	t.Run("equal_no_error", func(t *testing.T) {
+		p := &TablePermissions{Select: types.BoolValue(true)}
+		g := &TablePermissions{Select: types.BoolValue(true)}
+		if check(p, g) {
+			t.Error("equal permissions: expected no error")
+		}
+	})
+
+	t.Run("superset_no_error", func(t *testing.T) {
+		p := &TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)}
+		g := &TablePermissions{Select: types.BoolValue(true)}
+		if check(p, g) {
+			t.Error("proper superset: expected no error")
+		}
+	})
+
+	t.Run("permissions_all_no_error", func(t *testing.T) {
+		// permissions.All=true is a superset of any grantable_permissions.
+		p := &TablePermissions{All: types.BoolValue(true)}
+		g := &TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)}
+		if check(p, g) {
+			t.Error("permissions.All=true: expected no error for any grantable_permissions")
+		}
+	})
+
+	t.Run("missing_permission_error", func(t *testing.T) {
+		p := &TablePermissions{Select: types.BoolValue(true)}
+		g := &TablePermissions{Select: types.BoolValue(true), Insert: types.BoolValue(true)}
+		if !check(p, g) {
+			t.Error("insert in grantable but not in permissions: expected error")
+		}
+	})
+
+	t.Run("grantable_all_without_perms_all_error", func(t *testing.T) {
+		p := &CatalogPermissions{Describe: types.BoolValue(true)}
+		g := &CatalogPermissions{All: types.BoolValue(true)}
+		if !check(p, g) {
+			t.Error("grantable ALL but permissions lacks ALL: expected error")
+		}
+	})
+
+	t.Run("both_all_no_error", func(t *testing.T) {
+		p := &CatalogPermissions{All: types.BoolValue(true)}
+		g := &CatalogPermissions{All: types.BoolValue(true)}
+		if check(p, g) {
+			t.Error("both ALL: expected no error")
+		}
+	})
+}
+
+// ── defaultPermissions ───────────────────────────────────────────────
+
+func TestDefaultPermissions(t *testing.T) {
+	const principal = "arn:aws:iam::123456789012:role/TestRole"
+	const catalogID = "123456789012"
+
+	t.Run("catalog_grantable_only_sets_permissions", func(t *testing.T) {
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID:                   types.StringValue(catalogID),
+				GrantablePermissions: &CatalogPermissions{Describe: types.BoolValue(true)},
+			},
+		}
+		changed := defaultPermissions(plan)
+		if !changed {
+			t.Fatal("expected changed=true")
+		}
+		if plan.Catalog.Permissions == nil {
+			t.Fatal("expected Permissions to be set")
+		}
+		if !plan.Catalog.Permissions.Describe.ValueBool() {
+			t.Error("expected Permissions.Describe=true")
+		}
+	})
+
+	t.Run("catalog_both_set_unchanged", func(t *testing.T) {
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID:                   types.StringValue(catalogID),
+				Permissions:          &CatalogPermissions{Describe: types.BoolValue(true), Alter: types.BoolValue(true)},
+				GrantablePermissions: &CatalogPermissions{Describe: types.BoolValue(true)},
+			},
+		}
+		defaultPermissions(plan)
+		// permissions should not be overwritten since it was already set.
+		if !plan.Catalog.Permissions.Alter.ValueBool() {
+			t.Error("Alter should still be true — permissions must not be overwritten")
+		}
+	})
+
+	t.Run("table_grantable_only_sets_permissions", func(t *testing.T) {
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:                 types.StringValue("tbl"),
+						GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		defaultPermissions(plan)
+		tbl := plan.Catalog.Database[0].Table[0]
+		if tbl.Permissions == nil {
+			t.Fatal("expected table Permissions to be set")
+		}
+		if !tbl.Permissions.Select.ValueBool() {
+			t.Error("expected table Permissions.Select=true")
+		}
+	})
+
+	t.Run("wildcard_grantable_only_sets_permissions", func(t *testing.T) {
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Wildcard: &TablePermModel{
+						GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
+					},
+				}},
+			},
+		}
+		defaultPermissions(plan)
+		wc := plan.Catalog.Database[0].Wildcard
+		if wc.Permissions == nil {
+			t.Fatal("expected wildcard Permissions to be set")
+		}
+		if !wc.Permissions.Select.ValueBool() {
+			t.Error("expected wildcard Permissions.Select=true")
+		}
+	})
+
+	t.Run("nil_catalog_no_panic", func(t *testing.T) {
+		plan := &LakeFormationPermissionsResourceModel{Principal: types.StringValue(principal)}
+		changed := defaultPermissions(plan)
+		if changed {
+			t.Error("nil catalog: expected changed=false")
+		}
+	})
+}
+
+// ── updatePermissions (diff-based update) ────────────────────────────────────
+
+// TestUpdatePermissions verifies that the diff-based Update path only revokes permissions
+// absent from the plan and only grants permissions absent from state.
+func TestUpdatePermissions(t *testing.T) {
+	const principal = "arn:aws:iam::123456789012:role/TestRole"
+	const catalogID = "123456789012"
+	ctx := context.Background()
+
+	t.Run("unchanged_permissions_not_revoked_or_regranted", func(t *testing.T) {
+		// SELECT exists in both state and plan → no revoke, no grant.
+		mock := &mockLFClient{}
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:        types.StringValue("tbl"),
+						Permissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		plan := state // identical
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.revokeCalls) != 0 {
+			t.Errorf("expected no revoke calls; got %d", len(mock.revokeCalls))
+		}
+		if len(mock.grantCalls) != 0 {
+			t.Errorf("expected no grant calls; got %d", len(mock.grantCalls))
+		}
+	})
+
+	t.Run("removed_permission_revoked_only", func(t *testing.T) {
+		// State has SELECT+DESCRIBE; plan has only SELECT → DESCRIBE revoked, SELECT untouched.
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name: types.StringValue("tbl"),
+						Permissions: &TablePermissions{
+							Select:   types.BoolValue(true),
+							Describe: types.BoolValue(true),
+						},
+					}},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:        types.StringValue("tbl"),
+						Permissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rc := findRevokeCall(mock.revokeCalls, isTableResource("db", "tbl"))
+		if rc == nil {
+			t.Fatal("expected RevokePermissions call for table")
+		}
+		if !permsEqual(rc.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("revoked = %v, want [DESCRIBE]", rc.Permissions)
+		}
+		if len(rc.PermissionsWithGrantOption) != 0 {
+			t.Errorf("unexpected grantable revoke: %v", rc.PermissionsWithGrantOption)
+		}
+		// SELECT must not appear in any grant call.
+		gc := findGrantCall(mock.grantCalls, isTableResource("db", "tbl"))
+		if gc != nil {
+			t.Errorf("expected no grant call for unchanged SELECT; got Permissions=%v", gc.Permissions)
+		}
+	})
+
+	t.Run("added_permission_granted_only", func(t *testing.T) {
+		// State has SELECT; plan has SELECT+INSERT → INSERT granted, SELECT untouched.
+		mock := &mockLFClient{}
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:        types.StringValue("tbl"),
+						Permissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name: types.StringValue("tbl"),
+						Permissions: &TablePermissions{
+							Select: types.BoolValue(true),
+							Insert: types.BoolValue(true),
+						},
+					}},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.revokeCalls) != 0 {
+			t.Errorf("expected no revoke calls; got %d", len(mock.revokeCalls))
+		}
+		gc := findGrantCall(mock.grantCalls, isTableResource("db", "tbl"))
+		if gc == nil {
+			t.Fatal("expected GrantPermissions call for table")
+		}
+		if !permsEqual(gc.Permissions, []lftypes.Permission{lftypes.PermissionInsert}) {
+			t.Errorf("granted = %v, want [INSERT]", gc.Permissions)
+		}
+	})
+
+	t.Run("all_in_plan_triggers_full_revoke_then_grant", func(t *testing.T) {
+		// State has SELECT; plan has ALL → full revoke+grant cycle (ALL exception).
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("db"),
+					Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("db"),
+					Permissions: &DatabasePermissions{All: types.BoolValue(true)},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rc := findRevokeCall(mock.revokeCalls, isDatabaseResource("db"))
+		if rc == nil {
+			t.Fatal("expected RevokePermissions call (ALL exception requires full cycle)")
+		}
+		gc := findGrantCall(mock.grantCalls, isDatabaseResource("db"))
+		if gc == nil {
+			t.Fatal("expected GrantPermissions call")
+		}
+		if !permsEqual(gc.Permissions, []lftypes.Permission{lftypes.PermissionAll}) {
+			t.Errorf("granted = %v, want [ALL]", gc.Permissions)
+		}
+	})
+
+	t.Run("all_in_state_triggers_full_revoke_then_grant", func(t *testing.T) {
+		// State has ALL; plan has specific perms → full revoke+grant cycle.
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("db"),
+					Permissions: &DatabasePermissions{All: types.BoolValue(true)},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("db"),
+					Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rc := findRevokeCall(mock.revokeCalls, isDatabaseResource("db"))
+		if rc == nil {
+			t.Fatal("expected RevokePermissions call (ALL exception requires full cycle)")
+		}
+		gc := findGrantCall(mock.grantCalls, isDatabaseResource("db"))
+		if gc == nil {
+			t.Fatal("expected GrantPermissions call")
+		}
+		if !permsEqual(gc.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("granted = %v, want [DESCRIBE]", gc.Permissions)
+		}
+	})
+
+	t.Run("grant_option_added_without_regranting_existing_permission", func(t *testing.T) {
+		// State: SELECT regular. Plan: SELECT regular + SELECT grantable.
+		// SELECT already exists → no revoke. Grant call must add grant option.
+		mock := &mockLFClient{}
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:        types.StringValue("tbl"),
+						Permissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:                 types.StringValue("tbl"),
+						Permissions:          &TablePermissions{Select: types.BoolValue(true)},
+						GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mock.revokeCalls) != 0 {
+			t.Errorf("expected no revoke; got %d call(s)", len(mock.revokeCalls))
+		}
+		gc := findGrantCall(mock.grantCalls, isTableResource("db", "tbl"))
+		if gc == nil {
+			t.Fatal("expected GrantPermissions call to add grant option")
+		}
+		if !permsEqual(gc.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("grant option = %v, want [SELECT]", gc.PermissionsWithGrantOption)
+		}
+	})
+
+	t.Run("grant_option_removed_without_revoking_regular_permission", func(t *testing.T) {
+		// State: SELECT regular + SELECT grantable.
+		// Plan: SELECT regular + explicit empty grantable block (removes the grant option).
+		// Regular SELECT must stay; only the grant option is revoked.
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:                 types.StringValue("tbl"),
+						Permissions:          &TablePermissions{Select: types.BoolValue(true)},
+						GrantablePermissions: &TablePermissions{Select: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("db"),
+					Table: []TablePermModel{{
+						Name:                 types.StringValue("tbl"),
+						Permissions:          &TablePermissions{Select: types.BoolValue(true)},
+						GrantablePermissions: &TablePermissions{}, // explicit empty = remove grant option
+					}},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rc := findRevokeCall(mock.revokeCalls, isTableResource("db", "tbl"))
+		if rc == nil {
+			t.Fatal("expected RevokePermissions call to remove grant option")
+		}
+		if len(rc.Permissions) != 0 {
+			t.Errorf("regular Permissions should be empty in revoke (only removing grant option); got %v", rc.Permissions)
+		}
+		if !permsEqual(rc.PermissionsWithGrantOption, []lftypes.Permission{lftypes.PermissionSelect}) {
+			t.Errorf("PermissionsWithGrantOption = %v, want [SELECT]", rc.PermissionsWithGrantOption)
+		}
+		if len(mock.grantCalls) != 0 {
+			t.Errorf("expected no grant calls; got %d", len(mock.grantCalls))
+		}
+	})
+
+	t.Run("new_database_in_plan_fully_granted", func(t *testing.T) {
+		// Plan adds a new database not present in state → full grant.
+		mock := &mockLFClient{}
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog:   &CatalogPermModel{ID: types.StringValue(catalogID)},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("new_db"),
+					Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		gc := findGrantCall(mock.grantCalls, isDatabaseResource("new_db"))
+		if gc == nil {
+			t.Fatal("expected GrantPermissions call for new database")
+		}
+		if !permsEqual(gc.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("granted = %v, want [DESCRIBE]", gc.Permissions)
+		}
+		if len(mock.revokeCalls) != 0 {
+			t.Errorf("expected no revoke calls; got %d", len(mock.revokeCalls))
+		}
+	})
+
+	t.Run("removed_database_fully_revoked", func(t *testing.T) {
+		// State has a database; plan does not → revoke all.
+		mock := mockLFClientWithPerms()
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("old_db"),
+					Permissions: &DatabasePermissions{Describe: types.BoolValue(true)},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog:   &CatalogPermModel{ID: types.StringValue(catalogID)},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		rc := findRevokeCall(mock.revokeCalls, isDatabaseResource("old_db"))
+		if rc == nil {
+			t.Fatal("expected RevokePermissions call for removed database")
+		}
+		if !permsEqual(rc.Permissions, []lftypes.Permission{lftypes.PermissionDescribe}) {
+			t.Errorf("revoked = %v, want [DESCRIBE]", rc.Permissions)
+		}
+	})
+}
+
+func TestResolveRegion(t *testing.T) {
+	t.Run("resource_region_used_when_set", func(t *testing.T) {
+		r := &LakeFormationPermissionsResource{awsCfg: aws.Config{Region: "us-west-2"}}
+		got, err := r.resolveRegion(types.StringValue("eu-west-1"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "eu-west-1" {
+			t.Errorf("got %q, want eu-west-1", got)
+		}
+	})
+
+	t.Run("provider_region_used_when_resource_region_null", func(t *testing.T) {
+		r := &LakeFormationPermissionsResource{awsCfg: aws.Config{Region: "us-west-2"}}
+		got, err := r.resolveRegion(types.StringNull())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "us-west-2" {
+			t.Errorf("got %q, want us-west-2", got)
+		}
+	})
+
+	t.Run("error_when_no_region_available", func(t *testing.T) {
+		r := &LakeFormationPermissionsResource{awsCfg: aws.Config{}}
+		_, err := r.resolveRegion(types.StringNull())
+		if err == nil {
+			t.Fatal("expected error when no region is configured")
 		}
 	})
 }
