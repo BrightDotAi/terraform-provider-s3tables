@@ -18,11 +18,11 @@ Manages AWS Lake Formation permissions for a catalog, databases, and tables.
 ### Required
 
 - `principal` (String) IAM principal ARN to grant permissions to.
-- `region` (String) AWS region where the Lake Formation permissions reside.
 
 ### Optional
 
 - `catalog` (Block, Optional) Catalog-level permissions and nested database/table permissions. (see [below for nested schema](#nestedblock--catalog))
+- `region` (String) AWS region where the Lake Formation permissions reside. If omitted, falls back to the provider region or AWS_REGION / AWS_DEFAULT_REGION.
 
 <a id="nestedblock--catalog"></a>
 ### Nested Schema for `catalog`
