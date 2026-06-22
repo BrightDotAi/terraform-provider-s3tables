@@ -496,9 +496,74 @@ permissions {
 }
 ```
 
+#### `permissions` / `grantable_permissions` constraints
+
+Three additional rules govern the relationship between `permissions` and `grantable_permissions` at each resource level:
+
+1. **Auto-computed `permissions`** — if `grantable_permissions` is set and `permissions` is omitted, `permissions` is automatically set equal to `grantable_permissions` during the plan phase. You do not need to duplicate the same flags.
+
+2. **Superset constraint** — if both `permissions` and `grantable_permissions` are explicitly set, every permission in `grantable_permissions` must also appear in `permissions`. AWS requires this at the API level, and the provider enforces it at plan time to surface errors early.
+
+3. **`permissions { all = true }` exemption** — `permissions { all = true }` satisfies the superset constraint unconditionally, regardless of what `grantable_permissions` contains.
+
+```hcl
+# Correct: only grantable_permissions set — permissions auto-computed to { select = true }
+table {
+  name = "events"
+
+  grantable_permissions {
+    select = true
+  }
+}
+
+# Correct: permissions is a proper superset of grantable_permissions
+table {
+  name = "events"
+
+  permissions {
+    select   = true
+    describe = true
+  }
+
+  grantable_permissions {
+    select = true   # select is present in permissions ✓
+  }
+}
+
+# Error: grantable_permissions contains select but permissions does not
+table {
+  name = "events"
+
+  permissions {
+    describe = true
+  }
+
+  grantable_permissions {
+    select = true   # not in permissions — plan-time error
+  }
+}
+
+# Correct: permissions { all = true } satisfies the constraint for any grantable_permissions
+table {
+  name = "events"
+
+  permissions {
+    all = true
+  }
+
+  grantable_permissions {
+    select   = true
+    describe = true
+  }
+}
+```
+
 #### Example — Grantable permissions (grant with grant option)
 
-`grantable_permissions` grants the principal the ability to re-grant those same permissions to other principals. It mirrors `permissions` in structure and may be configured alongside or independently of `permissions`.
+`grantable_permissions` grants the principal the ability to re-grant those same permissions to other principals. It mirrors `permissions` in structure. Two behaviors apply at plan time:
+
+- **Only `grantable_permissions` set** — `permissions` is automatically computed to equal `grantable_permissions`. You do not need to repeat the same flags in both blocks.
+- **Both set** — `permissions` must contain every permission listed in `grantable_permissions`. Setting `permissions { all = true }` always satisfies this constraint.
 
 ```hcl
 resource "bai_lakeformation_permissions" "delegated_admin" {
@@ -573,14 +638,14 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 | Argument | Type | Required | Forces New Resource | Description |
 |----------|------|----------|---------------------|-------------|
 | `principal` | string | Yes | Yes | IAM principal ARN to grant permissions to. |
-| `region` | string | Yes | Yes | AWS region where the Lake Formation permissions reside. |
+| `region` | string | No | Yes | AWS region where the Lake Formation permissions reside. If omitted, falls back to the provider `region` or `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables. An error is raised at plan time if the region cannot be determined from any source. |
 
 **`catalog` block:**
 
 | Argument | Type | Required | Forces New Resource | Description |
 |----------|------|----------|---------------------|-------------|
 | `id` | string | Yes | Yes | AWS account ID (catalog ID) that owns the resources. |
-| `permissions` | block | No | — | Catalog-level permissions to grant (see below). |
+| `permissions` | block | Computed/Optional | — | Catalog-level permissions to grant (see below). Auto-computed to equal `grantable_permissions` when omitted. |
 | `grantable_permissions` | block | No | — | Catalog-level permissions the principal can grant to others. |
 | `database` | block list | No | — | Zero or more database blocks. |
 
@@ -589,7 +654,7 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `name` | string | Yes | Database name. |
-| `permissions` | block | No | Database-level permissions to grant. |
+| `permissions` | block | Computed/Optional | Database-level permissions to grant. Auto-computed to equal `grantable_permissions` when omitted. |
 | `grantable_permissions` | block | No | Database-level permissions the principal can grant to others. |
 | `table` | block list | No | Named table permission blocks. Mutually exclusive with `wildcard`. |
 | `wildcard` | block | No | Permissions on all tables in this database. Mutually exclusive with `table`. |
@@ -599,14 +664,14 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `name` | string | Yes | Table name. |
-| `permissions` | block | No | Table-level permissions to grant. |
+| `permissions` | block | Computed/Optional | Table-level permissions to grant. Auto-computed to equal `grantable_permissions` when omitted. |
 | `grantable_permissions` | block | No | Table-level permissions the principal can grant to others. |
 
 **`wildcard` block:**
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
-| `permissions` | block | No | Table-level permissions to grant on all tables in the database. |
+| `permissions` | block | Computed/Optional | Table-level permissions to grant on all tables in the database. Auto-computed to equal `grantable_permissions` when omitted. |
 | `grantable_permissions` | block | No | Table-level permissions the principal can grant to others on all tables. |
 
 **Catalog `permissions` / `grantable_permissions` attributes:**
@@ -641,6 +706,17 @@ Similarly, removing a `database`, `table`, or `wildcard` block from configuratio
 | `drop` | `DROP` |
 | `insert` | `INSERT` |
 | `select` | `SELECT` |
+
+#### Import
+
+Import an existing resource using `principal_arn,region,catalog_id`:
+
+```shell
+terraform import bai_lakeformation_permissions.data_admin \
+  "arn:aws:iam::123456789012:role/DataAdminRole,us-east-1,123456789012"
+```
+
+The region is required in the import ID — it cannot be inferred from context during import.
 
 ## Building the Provider
 
