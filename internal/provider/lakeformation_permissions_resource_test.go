@@ -2117,6 +2117,10 @@ func TestDelete(t *testing.T) {
 		)
 		state := &LakeFormationPermissionsResourceModel{
 			Principal: types.StringValue(principal),
+			Catalog:   &CatalogPermModel{ID: types.StringValue(catalogID)},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
 				ID: types.StringValue(catalogID),
 				Database: []DatabasePermModel{{
@@ -2557,6 +2561,7 @@ func TestCheckPerms(t *testing.T) {
 			t.Error("partial database subset: expected no error")
 		}
 	})
+}
 
 	t.Run("all_individual_database_error", func(t *testing.T) {
 		p := &Permissions{
