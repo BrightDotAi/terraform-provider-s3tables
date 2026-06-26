@@ -18,9 +18,11 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
@@ -186,7 +188,7 @@ func (resolveUnknownToNull) PlanModifyObject(ctx context.Context, req planmodifi
 // for each resource type. The outer block is Optional+Computed with nullOrStateForUnknown.
 func permAttr(desc string) schema.SingleNestedAttribute {
 	b := func(d string) schema.BoolAttribute {
-		return schema.BoolAttribute{Optional: true, MarkdownDescription: d}
+		return schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false), MarkdownDescription: d}
 	}
 	return schema.SingleNestedAttribute{
 		Optional:            true,
@@ -322,23 +324,33 @@ func (v *lfPermissionsValidator) MarkdownDescription(ctx context.Context) string
 // with individual permission flags, and that table and wildcard blocks are not used together
 // in the same database block.
 func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
-	var data LakeFormationPermissionsResourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	// Config.Get uses reflect.Options{UnhandledNullAsEmpty: false}, which errors when
+	// optional bool fields within a permissions block are not set (null in config).
+	// Instead we get the catalog as a types.Object and decode it with
+	// UnhandledNullAsEmpty: true so that unset bools are treated as false.
+	var catalogObj types.Object
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("catalog"), &catalogObj)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	if data.Catalog == nil {
+	if catalogObj.IsNull() || catalogObj.IsUnknown() {
 		resp.Diagnostics.AddError("Missing required block", "A catalog block is required.")
 		return
 	}
 
-	catPath := path.Root("catalog")
-	checkPerms(data.Catalog.Permissions, LFResourceTypeCatalog, catPath.AtName("permissions"), &resp.Diagnostics)
-	checkPerms(data.Catalog.GrantablePermissions, LFResourceTypeCatalog, catPath.AtName("grantable_permissions"), &resp.Diagnostics)
-	checkSupersetPerms(data.Catalog.Permissions, data.Catalog.GrantablePermissions, catPath, &resp.Diagnostics)
+	var catalog CatalogPermModel
+	resp.Diagnostics.Append(catalogObj.As(ctx, &catalog, basetypes.ObjectAsOptions{UnhandledNullAsEmpty: true})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	for i, db := range data.Catalog.Database {
+	catPath := path.Root("catalog")
+	checkPerms(catalog.Permissions, LFResourceTypeCatalog, catPath.AtName("permissions"), &resp.Diagnostics)
+	checkPerms(catalog.GrantablePermissions, LFResourceTypeCatalog, catPath.AtName("grantable_permissions"), &resp.Diagnostics)
+	checkSupersetPerms(catalog.Permissions, catalog.GrantablePermissions, catPath, &resp.Diagnostics)
+
+	for i, db := range catalog.Database {
 		dbPath := catPath.AtName("database").AtListIndex(i)
 
 		if len(db.Table) > 0 && db.Wildcard != nil {
