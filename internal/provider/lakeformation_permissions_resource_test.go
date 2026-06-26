@@ -2115,10 +2115,6 @@ func TestDelete(t *testing.T) {
 			[]lftypes.Permission{lftypes.PermissionSelect},
 			[]lftypes.Permission{lftypes.PermissionSelect},
 		)
-		state := &LakeFormationPermissionsResourceModel{
-			Principal: types.StringValue(principal),
-			Catalog:   &CatalogPermModel{ID: types.StringValue(catalogID)},
-		}
 		plan := &LakeFormationPermissionsResourceModel{
 			Principal: types.StringValue(principal),
 			Catalog: &CatalogPermModel{
@@ -2132,7 +2128,7 @@ func TestDelete(t *testing.T) {
 				}},
 			},
 		}
-		if err := del(mock, state); err != nil {
+		if err := del(mock, plan); err != nil {
 			t.Fatalf("delete error: %v", err)
 		}
 		call := findRevokeCall(mock.revokeCalls, isWildcardResource("raw"))
@@ -2561,7 +2557,6 @@ func TestCheckPerms(t *testing.T) {
 			t.Error("partial database subset: expected no error")
 		}
 	})
-}
 
 	t.Run("all_individual_database_error", func(t *testing.T) {
 		p := &Permissions{
