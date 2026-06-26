@@ -56,11 +56,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all database permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the database.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
 - `create_table` (Boolean) Grants CREATE_TABLE.
-- `describe` (Boolean) Grants DESCRIBE on the database.
-- `drop` (Boolean) Grants DROP on the database.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 <a id="nestedatt--catalog--database--permissions"></a>
@@ -68,11 +73,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all database permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the database.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
 - `create_table` (Boolean) Grants CREATE_TABLE.
-- `describe` (Boolean) Grants DESCRIBE on the database.
-- `drop` (Boolean) Grants DROP on the database.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 <a id="nestedblock--catalog--database--table"></a>
@@ -92,13 +102,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all table permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the table.
-- `delete` (Boolean) Grants DELETE on the table.
-- `describe` (Boolean) Grants DESCRIBE on the table.
-- `drop` (Boolean) Grants DROP on the table.
-- `insert` (Boolean) Grants INSERT on the table.
-- `select` (Boolean) Grants SELECT on the table.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 <a id="nestedatt--catalog--database--table--permissions"></a>
@@ -106,13 +119,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all table permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the table.
-- `delete` (Boolean) Grants DELETE on the table.
-- `describe` (Boolean) Grants DESCRIBE on the table.
-- `drop` (Boolean) Grants DROP on the table.
-- `insert` (Boolean) Grants INSERT on the table.
-- `select` (Boolean) Grants SELECT on the table.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 
@@ -130,13 +146,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all table permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the table.
-- `delete` (Boolean) Grants DELETE on the table.
-- `describe` (Boolean) Grants DESCRIBE on the table.
-- `drop` (Boolean) Grants DROP on the table.
-- `insert` (Boolean) Grants INSERT on the table.
-- `select` (Boolean) Grants SELECT on the table.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 <a id="nestedatt--catalog--database--wildcard--permissions"></a>
@@ -144,13 +163,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all table permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the table.
-- `delete` (Boolean) Grants DELETE on the table.
-- `describe` (Boolean) Grants DESCRIBE on the table.
-- `drop` (Boolean) Grants DROP on the table.
-- `insert` (Boolean) Grants INSERT on the table.
-- `select` (Boolean) Grants SELECT on the table.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
+- `create_catalog` (Boolean) Grants CREATE_CATALOG.
+- `create_database` (Boolean) Grants CREATE_DATABASE.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 
@@ -160,12 +182,16 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all catalog permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the catalog.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
 - `create_catalog` (Boolean) Grants CREATE_CATALOG.
 - `create_database` (Boolean) Grants CREATE_DATABASE.
-- `describe` (Boolean) Grants DESCRIBE on the catalog.
-- `drop` (Boolean) Grants DROP on the catalog.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
 
 
 <a id="nestedatt--catalog--permissions"></a>
@@ -173,9 +199,13 @@ Optional:
 
 Optional:
 
-- `all` (Boolean) Grants all catalog permissions. Mutually exclusive with individual permission attributes.
-- `alter` (Boolean) Grants ALTER on the catalog.
+- `all` (Boolean) Grants all permissions. Mutually exclusive with individual permission attributes.
+- `alter` (Boolean) Grants ALTER.
 - `create_catalog` (Boolean) Grants CREATE_CATALOG.
 - `create_database` (Boolean) Grants CREATE_DATABASE.
-- `describe` (Boolean) Grants DESCRIBE on the catalog.
-- `drop` (Boolean) Grants DROP on the catalog.
+- `create_table` (Boolean) Grants CREATE_TABLE.
+- `delete` (Boolean) Grants DELETE.
+- `describe` (Boolean) Grants DESCRIBE.
+- `drop` (Boolean) Grants DROP.
+- `insert` (Boolean) Grants INSERT.
+- `select` (Boolean) Grants SELECT.
