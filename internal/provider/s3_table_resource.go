@@ -387,6 +387,8 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	desired := plan
+
 	committedTbl, commitErr := txn.Commit(ctx)
 	// Some iceberg-go / Glue catalog combinations can return a commit error due to
 	// metadata reload issues even when the commit succeeded. When we get a non-nil
@@ -411,13 +413,19 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	err = setModelFromTable(&plan, observedTbl)
+	var observed S3TableResourceModel
+	err = setModelFromTable(&observed, observedTbl)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading iceberg fields", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if !commitErrorCanBeIgnored(commitErr, asIcebergTable(committedTbl), desired, observed) {
+		resp.Diagnostics.AddError("Error committing Iceberg table update", commitErr.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
 }
 
 // Delete purges the Iceberg table from the S3 Tables catalog. A not-found error is
@@ -766,6 +774,61 @@ func pickTableForState(
 		return nil, commitErr
 	}
 	return nil, fmt.Errorf("unable to obtain updated table state")
+}
+
+func commitErrorCanBeIgnored(commitErr error, committed icebergTable, desired, observed S3TableResourceModel) bool {
+	if commitErr == nil {
+		return true
+	}
+	if committed != nil {
+		return true
+	}
+	return partitionsEqualByName(desired.Partitions, observed.Partitions)
+}
+
+func partitionsEqualByName(a, b []PartitionModel) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	toMap := func(xs []PartitionModel) map[string]PartitionModel {
+		m := make(map[string]PartitionModel, len(xs))
+		for _, x := range xs {
+			if x.Name.IsNull() || x.Name.IsUnknown() {
+				continue
+			}
+			m[x.Name.ValueString()] = x
+		}
+		return m
+	}
+
+	am := toMap(a)
+	bm := toMap(b)
+	if len(am) != len(a) || len(bm) != len(b) {
+		return false
+	}
+
+	for name, ap := range am {
+		bp, ok := bm[name]
+		if !ok {
+			return false
+		}
+
+		if ap.SourceName.IsNull() || ap.SourceName.IsUnknown() || bp.SourceName.IsNull() || bp.SourceName.IsUnknown() {
+			return false
+		}
+		if ap.Transform.IsNull() || ap.Transform.IsUnknown() || bp.Transform.IsNull() || bp.Transform.IsUnknown() {
+			return false
+		}
+
+		if ap.SourceName.ValueString() != bp.SourceName.ValueString() ||
+			ap.Transform.ValueString() != bp.Transform.ValueString() ||
+			ap.Name.ValueString() != bp.Name.ValueString() {
+			return false
+		}
+	}
+
+	return true
 }
 
 // BuildSchema converts Terraform field models to an Iceberg schema.

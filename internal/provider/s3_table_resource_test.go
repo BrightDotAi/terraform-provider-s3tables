@@ -537,6 +537,41 @@ func TestPickTableForState(t *testing.T) {
 	})
 }
 
+func TestCommitErrorCanBeIgnored(t *testing.T) {
+	p := func(src, transform, name string) PartitionModel {
+		return PartitionModel{
+			SourceName: types.StringValue(src),
+			Transform:  types.StringValue(transform),
+			Name:       types.StringValue(name),
+		}
+	}
+
+	t.Run("nil_commit_error", func(t *testing.T) {
+		if !commitErrorCanBeIgnored(nil, nil, S3TableResourceModel{}, S3TableResourceModel{}) {
+			t.Fatal("expected commit error to be ignorable when nil")
+		}
+	})
+
+	t.Run("commit_error_with_committed_table", func(t *testing.T) {
+		if !commitErrorCanBeIgnored(errors.New("boom"), fakeTable{ver: 1}, S3TableResourceModel{}, S3TableResourceModel{}) {
+			t.Fatal("expected commit error to be ignorable when committed table is present")
+		}
+	})
+
+	t.Run("commit_error_without_committed_table_requires_partition_match", func(t *testing.T) {
+		desired := S3TableResourceModel{Partitions: []PartitionModel{p("ts", "month", "ts_part")}}
+		observedSame := S3TableResourceModel{Partitions: []PartitionModel{p("ts", "month", "ts_part")}}
+		observedDiff := S3TableResourceModel{Partitions: []PartitionModel{p("ts", "hour", "ts_part")}}
+
+		if !commitErrorCanBeIgnored(errors.New("boom"), nil, desired, observedSame) {
+			t.Fatal("expected commit error to be ignorable when observed partitions match desired")
+		}
+		if commitErrorCanBeIgnored(errors.New("boom"), nil, desired, observedDiff) {
+			t.Fatal("expected commit error to NOT be ignorable when observed partitions differ")
+		}
+	})
+}
+
 // ── mocks for Apply* tests ────────────────────────────────────────────────────
 
 type addColumnArgs struct {
