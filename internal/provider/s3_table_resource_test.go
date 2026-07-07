@@ -15,6 +15,23 @@ import (
 
 // ── unit tests ────────────────────────────────────────────────────────────────
 
+type fakeTable struct {
+	ver    int
+	schema *iceberg.Schema
+	spec   iceberg.PartitionSpec
+	props  iceberg.Properties
+}
+
+func (t fakeTable) Version() int                { return t.ver }
+func (t fakeTable) Schema() *iceberg.Schema     { return t.schema }
+func (t fakeTable) Spec() iceberg.PartitionSpec { return t.spec }
+func (t fakeTable) Properties() iceberg.Properties {
+	if t.props == nil {
+		return iceberg.Properties{}
+	}
+	return t.props
+}
+
 func TestParseIcebergType(t *testing.T) {
 	valid := []string{
 		"boolean", "int", "long", "float", "double",
@@ -394,7 +411,7 @@ func TestBuildProperties(t *testing.T) {
 func TestPropertiesToPropertyModels(t *testing.T) {
 	t.Run("default_props_filtered_out", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "zstd",
 		}
 		models := propertiesToPropertyModels(props)
@@ -405,8 +422,8 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("non_default_props_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":                      "iceberg",
-			"write_compression":               "zstd",
+			"table_type":                       "iceberg",
+			"write_compression":                "zstd",
 			"write.metadata.compression-codec": "gzip",
 		}
 		models := propertiesToPropertyModels(props)
@@ -423,7 +440,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("overridden_default_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "snappy",
 		}
 		models := propertiesToPropertyModels(props)
@@ -447,6 +464,76 @@ func TestBuildPartitionSpec_Unpartitioned(t *testing.T) {
 	if spec.NumFields() != 0 {
 		t.Errorf("expected unpartitioned spec, got %d fields", spec.NumFields())
 	}
+}
+
+func TestPickTableForState(t *testing.T) {
+	t.Run("prefers_committed_even_if_commit_error", func(t *testing.T) {
+		refreshCalled := 0
+		reloadCalled := 0
+		committed := fakeTable{ver: 2}
+		got, err := pickTableForState(nil, committed, errors.New("commit-error"),
+			func() (icebergTable, error) {
+				refreshCalled++
+				return fakeTable{ver: 1}, nil
+			},
+			func() (icebergTable, error) {
+				reloadCalled++
+				return fakeTable{ver: 1}, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got == nil || got.Version() != 2 {
+			t.Fatalf("expected committed table version 2, got %#v", got)
+		}
+		if refreshCalled != 0 || reloadCalled != 0 {
+			t.Fatalf("expected no refresh/reload calls, got refresh=%d reload=%d", refreshCalled, reloadCalled)
+		}
+	})
+
+	t.Run("falls_back_to_refresh", func(t *testing.T) {
+		refreshCalled := 0
+		got, err := pickTableForState(nil, nil, nil,
+			func() (icebergTable, error) {
+				refreshCalled++
+				return fakeTable{ver: 3}, nil
+			},
+			func() (icebergTable, error) {
+				return fakeTable{ver: 4}, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Version() != 3 || refreshCalled != 1 {
+			t.Fatalf("expected refresh table version 3 (1 call), got ver=%d refreshCalls=%d", got.Version(), refreshCalled)
+		}
+	})
+
+	t.Run("falls_back_to_reload_when_refresh_fails", func(t *testing.T) {
+		got, err := pickTableForState(nil, nil, nil,
+			func() (icebergTable, error) { return nil, errors.New("refresh-failed") },
+			func() (icebergTable, error) { return fakeTable{ver: 5}, nil },
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Version() != 5 {
+			t.Fatalf("expected reload table version 5, got %d", got.Version())
+		}
+	})
+
+	t.Run("returns_commit_error_when_all_sources_fail", func(t *testing.T) {
+		commitErr := errors.New("commit-failed")
+		_, err := pickTableForState(nil, nil, commitErr,
+			func() (icebergTable, error) { return nil, errors.New("refresh-failed") },
+			func() (icebergTable, error) { return nil, errors.New("reload-failed") },
+		)
+		if err == nil || err.Error() != commitErr.Error() {
+			t.Fatalf("expected commit error %q, got %v", commitErr.Error(), err)
+		}
+	})
 }
 
 // ── mocks for Apply* tests ────────────────────────────────────────────────────
@@ -518,8 +605,8 @@ type mockTransaction struct {
 	partition *mockPartitionUpdater
 }
 
-func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater    { return m.schema }
-func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater       { return m.partition }
+func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater { return m.schema }
+func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater   { return m.partition }
 
 // ── Apply* unit tests ─────────────────────────────────────────────────────────
 

@@ -22,10 +22,10 @@ import (
 	_ "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -45,12 +45,11 @@ func NewS3TableResource() resource.Resource {
 
 // Property defaults added to table automatically
 
-var prop_defaults = map[string]string {
-	"table_type": "iceberg",
-	"write_compression": "zstd",
+var prop_defaults = map[string]string{
+	"table_type":                      "iceberg",
+	"write_compression":               "zstd",
 	"write.parquet.compression-codec": "zstd",
 }
-
 
 // S3TableResource defines the resource implementation.
 type S3TableResource struct {
@@ -59,25 +58,25 @@ type S3TableResource struct {
 
 // S3TableResourceModel describes the resource data model.
 type S3TableResourceModel struct {
-	Warehouse         types.String     `tfsdk:"warehouse"`
-	Region			  types.String	   `tfsdk:"region"`
-	Namespace         types.String     `tfsdk:"namespace"`
-	Name              types.String     `tfsdk:"name"`
-	FormatVersion	  types.String	   `tfsdk:"format_version"`
-	Fields            []FieldModel     `tfsdk:"field"`
-	Partitions        []PartitionModel `tfsdk:"partition"`
-	Properties		  []PropertyModel  `tfsdk:"property"`
+	Warehouse     types.String     `tfsdk:"warehouse"`
+	Region        types.String     `tfsdk:"region"`
+	Namespace     types.String     `tfsdk:"namespace"`
+	Name          types.String     `tfsdk:"name"`
+	FormatVersion types.String     `tfsdk:"format_version"`
+	Fields        []FieldModel     `tfsdk:"field"`
+	Partitions    []PartitionModel `tfsdk:"partition"`
+	Properties    []PropertyModel  `tfsdk:"property"`
 }
 
 // FieldModel represents one column in the Iceberg schema.
 type FieldModel struct {
-	Name     types.String `tfsdk:"name"`
-	Type     types.String `tfsdk:"type"`
-	Required types.Bool   `tfsdk:"required"`
-	DefaultString  types.String `tfsdk:"default_string"`
-	DefaultNumber  types.Number `tfsdk:"default_number"`
-	DefaultBool  types.Bool `tfsdk:"default_bool"`
-	Doc      types.String `tfsdk:"doc"`
+	Name          types.String `tfsdk:"name"`
+	Type          types.String `tfsdk:"type"`
+	Required      types.Bool   `tfsdk:"required"`
+	DefaultString types.String `tfsdk:"default_string"`
+	DefaultNumber types.Number `tfsdk:"default_number"`
+	DefaultBool   types.Bool   `tfsdk:"default_bool"`
+	Doc           types.String `tfsdk:"doc"`
 }
 
 // PartitionModel represents one field in the Iceberg partition spec.
@@ -276,7 +275,6 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-
 	cat, err := data.GetCatalog(ctx, r.awsCfg)
 	if err != nil {
 		resp.Diagnostics.AddError("Error Connecting to Iceberg Catalog", err.Error())
@@ -294,7 +292,7 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	err = setModelFromTable(&data, tbl)
+	err = setModelFromTable(&data, tableAdapter{tbl})
 	if err != nil {
 		resp.Diagnostics.AddError("Error converting iceberg fields", err.Error())
 		return
@@ -307,7 +305,6 @@ func (r *S3TableResource) Create(ctx context.Context, req resource.CreateRequest
 	})
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
-
 
 // Read fetches the current table state from the S3 Tables catalog and refreshes
 // Terraform state. If the table no longer exists the resource is removed from state.
@@ -336,7 +333,7 @@ func (r *S3TableResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	err = setModelFromTable(&data, tbl)
+	err = setModelFromTable(&data, tableAdapter{tbl})
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading Iceberg fields", err.Error())
 		return
@@ -383,27 +380,38 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Error updating partition spec", err.Error())
 		return
 	}
-	
+
 	err = checkPropChanges(state.Properties, plan.Properties)
 	if err != nil {
 		resp.Diagnostics.AddError("Error - Table property changes not supported", err.Error())
 		return
 	}
 
-	_, _ = txn.Commit(ctx)
-	// Ignoring errors from Commit because of bug loading reloading meta-data after
-	// commit causes spurious errors.
-	// Instead will refresh table and reload state to confirm updates have been
-	// applied correctly.
-
-	// Reload table
-	err = tbl.Refresh(ctx)
+	committedTbl, commitErr := txn.Commit(ctx)
+	// Some iceberg-go / Glue catalog combinations can return a commit error due to
+	// metadata reload issues even when the commit succeeded. When we get a non-nil
+	// committed table, prefer it for state to avoid "inconsistent result after apply".
+	observedTbl, err := pickTableForState(ctx, asIcebergTable(committedTbl), commitErr,
+		func() (icebergTable, error) {
+			if err := tbl.Refresh(ctx); err != nil {
+				return nil, err
+			}
+			return asIcebergTable(tbl), nil
+		},
+		func() (icebergTable, error) {
+			t, err := cat.LoadTable(ctx, identifier)
+			if err != nil {
+				return nil, err
+			}
+			return asIcebergTable(t), nil
+		},
+	)
 	if err != nil {
-		resp.Diagnostics.AddError("Error loading iceberg table", err.Error())
+		resp.Diagnostics.AddError("Error reloading iceberg table after update", err.Error())
 		return
 	}
 
-	err = setModelFromTable(&plan, tbl)
+	err = setModelFromTable(&plan, observedTbl)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading iceberg fields", err.Error())
 		return
@@ -411,7 +419,6 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
-
 
 // Delete purges the Iceberg table from the S3 Tables catalog. A not-found error is
 // treated as a successful deletion so that partially destroyed resources can be cleaned up.
@@ -455,7 +462,6 @@ func (r *S3TableResource) ImportState(ctx context.Context, req resource.ImportSt
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
 
 // GetCatalog -  connect to catalog using glue RESTful endpoint
 func (data *S3TableResourceModel) GetCatalog(ctx context.Context, awsCfg aws.Config) (*rest.Catalog, error) {
@@ -544,7 +550,7 @@ func stripV3FieldsFromV2Metadata(data []byte) []byte {
 }
 
 // GetIdentifier - get Identifier from table model
-func (data *S3TableResourceModel) GetIdentifier() (itable.Identifier) {
+func (data *S3TableResourceModel) GetIdentifier() itable.Identifier {
 	return catalog.ToIdentifier(data.Namespace.ValueString(), data.Name.ValueString())
 }
 
@@ -559,13 +565,13 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 		return nil, err
 	}
 	nestedField := iceberg.NestedField{
-		ID:       id + 1,
-		Name:     f.Name.ValueString(),
-		Type:     typ,
-		Required: f.Required.ValueBool(),
+		ID:             id + 1,
+		Name:           f.Name.ValueString(),
+		Type:           typ,
+		Required:       f.Required.ValueBool(),
 		InitialDefault: dv,
-		WriteDefault: dv,
-		Doc:      f.Doc.ValueString(),
+		WriteDefault:   dv,
+		Doc:            f.Doc.ValueString(),
 	}
 	return &nestedField, nil
 }
@@ -575,9 +581,15 @@ func (f *FieldModel) toNestedField(id int) (*iceberg.NestedField, error) {
 // Iceberg type. Returns nil when no default is configured.
 func (f *FieldModel) getFieldDefault() (any, error) {
 	default_count := 0
-	if !f.DefaultString.IsNull() && !f.DefaultString.IsUnknown() {default_count++}
-	if !f.DefaultNumber.IsNull() && !f.DefaultNumber.IsUnknown() {default_count++}
-	if !f.DefaultBool.IsNull() && !f.DefaultBool.IsUnknown() {default_count++}
+	if !f.DefaultString.IsNull() && !f.DefaultString.IsUnknown() {
+		default_count++
+	}
+	if !f.DefaultNumber.IsNull() && !f.DefaultNumber.IsUnknown() {
+		default_count++
+	}
+	if !f.DefaultBool.IsNull() && !f.DefaultBool.IsUnknown() {
+		default_count++
+	}
 
 	if default_count == 0 {
 		return nil, nil
@@ -620,12 +632,10 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 			return nil, fmt.Errorf("non-string default set for string field %s", f.Name)
 		}
 		return f.DefaultString.ValueString(), nil
-	default :
+	default:
 		return nil, fmt.Errorf("unsupported default type: %s", typ)
 	}
 }
-
-
 
 // anyToIcebergLit converts a Go-native default value to the Iceberg Literal required
 // by the schema API. Returns nil for a nil input (no default configured).
@@ -684,10 +694,36 @@ func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
 
 // Retrieving state
 
+type icebergTable interface {
+	Version() int
+	Schema() *iceberg.Schema
+	Spec() iceberg.PartitionSpec
+	Properties() iceberg.Properties
+}
+
+type tableAdapter struct{ t *itable.Table }
+
+func (a tableAdapter) Version() int {
+	if a.t == nil || a.t.Metadata() == nil {
+		return 0
+	}
+	return a.t.Metadata().Version()
+}
+func (a tableAdapter) Schema() *iceberg.Schema        { return a.t.Schema() }
+func (a tableAdapter) Spec() iceberg.PartitionSpec    { return a.t.Spec() }
+func (a tableAdapter) Properties() iceberg.Properties { return a.t.Properties() }
+
+func asIcebergTable(t *itable.Table) icebergTable {
+	if t == nil {
+		return nil
+	}
+	return tableAdapter{t: t}
+}
+
 // setModelFromTable - set model fields, partition spec, properties from iceberg table
-func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) (error) {
+func setModelFromTable(data *S3TableResourceModel, tbl icebergTable) error {
 	var err error
-	version := strconv.Itoa(tbl.Metadata().Version())
+	version := strconv.Itoa(tbl.Version())
 	data.FormatVersion = types.StringValue(version)
 
 	data.Fields, err = schemaToFieldModels(tbl.Schema())
@@ -698,6 +734,38 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) (error) {
 
 	data.Properties = propertiesToPropertyModels(tbl.Properties())
 	return nil
+}
+
+// pickTableForState selects the best available table instance to build Terraform state from
+// after an update. If commit produced a non-nil table, we prefer it even when commitErr is
+// non-nil (to avoid spurious "inconsistent result after apply" from stale refreshes).
+func pickTableForState(
+	_ context.Context,
+	committed icebergTable,
+	commitErr error,
+	refresh func() (icebergTable, error),
+	reload func() (icebergTable, error),
+) (icebergTable, error) {
+	if committed != nil {
+		return committed, nil
+	}
+
+	if refresh != nil {
+		if t, err := refresh(); err == nil && t != nil {
+			return t, nil
+		}
+	}
+
+	if reload != nil {
+		if t, err := reload(); err == nil && t != nil {
+			return t, nil
+		}
+	}
+
+	if commitErr != nil {
+		return nil, commitErr
+	}
+	return nil, fmt.Errorf("unable to obtain updated table state")
 }
 
 // BuildSchema converts Terraform field models to an Iceberg schema.
@@ -764,47 +832,47 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 // icebergToFieldModel converts an Iceberg NestedField to a Terraform FieldModel,
 // mapping the write-default value to the appropriate default_string, default_number,
 // or default_bool attribute.
-func  icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
+func icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
 	model := FieldModel{
-			Name:     types.StringValue(f.Name),
-			Type:     types.StringValue(f.Type.String()),
-			Required: types.BoolValue(f.Required),
-			DefaultString:  types.StringNull(),
-			DefaultNumber: 	types.NumberNull(),
-			DefaultBool:	types.BoolNull(),
-			Doc:      types.StringValue(f.Doc),
-		}
+		Name:          types.StringValue(f.Name),
+		Type:          types.StringValue(f.Type.String()),
+		Required:      types.BoolValue(f.Required),
+		DefaultString: types.StringNull(),
+		DefaultNumber: types.NumberNull(),
+		DefaultBool:   types.BoolNull(),
+		Doc:           types.StringValue(f.Doc),
+	}
 	val := f.WriteDefault
 	if val != nil {
-    	switch f.Type.String() {
-    	case "boolean":
+		switch f.Type.String() {
+		case "boolean":
 			var b bool
-			switch v :=val.(type) {
+			switch v := val.(type) {
 			case bool:
 				b = v
 			default:
-    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of type boolean, (type %s)", val, reflect.TypeOf(val))
-    		}
+				return FieldModel{}, fmt.Errorf("type missmatch: %v not of type boolean, (type %s)", val, reflect.TypeOf(val))
+			}
 			model.DefaultBool = types.BoolValue(b)
-    	case "int", "long", "float", "double":
+		case "int", "long", "float", "double":
 			var f64 float64
 			switch v := val.(type) {
 			case float64:
 				f64 = v
 			default:
-    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of numeric type (type %s)", val, reflect.TypeOf(val))
-    		}
+				return FieldModel{}, fmt.Errorf("type missmatch: %v not of numeric type (type %s)", val, reflect.TypeOf(val))
+			}
 			model.DefaultNumber = types.NumberValue(big.NewFloat(f64))
-    	case "string":
-    		s, ok := val.(string)
-    		if !ok {
-    			return FieldModel{}, fmt.Errorf("type missmatch: %v not of type string, (type %s)", val, reflect.TypeOf(val))
-    		}
+		case "string":
+			s, ok := val.(string)
+			if !ok {
+				return FieldModel{}, fmt.Errorf("type missmatch: %v not of type string, (type %s)", val, reflect.TypeOf(val))
+			}
 			model.DefaultString = types.StringValue(s)
-    	default:
-    		return FieldModel{}, fmt.Errorf("unsupported default value %v", val)
-    	}
-    }
+		default:
+			return FieldModel{}, fmt.Errorf("unsupported default value %v", val)
+		}
+	}
 	return model, nil
 }
 
@@ -821,8 +889,6 @@ func schemaToFieldModels(schema *iceberg.Schema) ([]FieldModel, error) {
 	}
 	return models, nil
 }
-
-
 
 // specToPartitionModels maps an Iceberg PartitionSpec back to Terraform partition models.
 func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) []PartitionModel {
@@ -951,7 +1017,7 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 	// Add columns that are in plan but not in current.
 	// Update columns for existing columns which have changed
 	for name, pf := range plan {
-		if cf, exists := current[name]; !exists  || pf != cf {
+		if cf, exists := current[name]; !exists || pf != cf {
 			typ, err := parseIcebergType(pf.Type.ValueString())
 			if err != nil {
 				return fmt.Errorf("field %q: %w", name, err)
@@ -968,11 +1034,11 @@ func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldMod
 				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
 			} else {
 				updater.UpdateColumn([]string{name}, itable.ColumnUpdate{
-					FieldType: iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},
-					Doc: iceberg.Optional[string]{Valid: true, Val: pf.Doc.ValueString()},
-					Required: iceberg.Optional[bool]{Valid: true, Val: pf.Required.ValueBool()},
+					FieldType:    iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},
+					Doc:          iceberg.Optional[string]{Valid: true, Val: pf.Doc.ValueString()},
+					Required:     iceberg.Optional[bool]{Valid: true, Val: pf.Required.ValueBool()},
 					WriteDefault: iceberg.Optional[iceberg.Literal]{Valid: true, Val: dvlit},
-			})
+				})
 			}
 		}
 	}
@@ -999,7 +1065,7 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 	hasChanges := len(current) != len(plan)
 	if !hasChanges {
 		for name, pp := range plan {
-			if sp, exists := current[name]; !exists || pp != sp{
+			if sp, exists := current[name]; !exists || pp != sp {
 				hasChanges = true
 				break
 			}
