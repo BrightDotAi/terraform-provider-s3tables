@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"testing"
@@ -471,7 +472,7 @@ func TestPickTableForState(t *testing.T) {
 		refreshCalled := 0
 		reloadCalled := 0
 		committed := fakeTable{ver: 2}
-		got, err := pickTableForState(nil, committed, errors.New("commit-error"),
+		got, err := pickTableForState(context.TODO(), committed, errors.New("commit-error"),
 			func() (icebergTable, error) {
 				refreshCalled++
 				return fakeTable{ver: 1}, nil
@@ -494,7 +495,7 @@ func TestPickTableForState(t *testing.T) {
 
 	t.Run("falls_back_to_refresh", func(t *testing.T) {
 		refreshCalled := 0
-		got, err := pickTableForState(nil, nil, nil,
+		got, err := pickTableForState(context.TODO(), nil, nil,
 			func() (icebergTable, error) {
 				refreshCalled++
 				return fakeTable{ver: 3}, nil
@@ -512,7 +513,7 @@ func TestPickTableForState(t *testing.T) {
 	})
 
 	t.Run("falls_back_to_reload_when_refresh_fails", func(t *testing.T) {
-		got, err := pickTableForState(nil, nil, nil,
+		got, err := pickTableForState(context.TODO(), nil, nil,
 			func() (icebergTable, error) { return nil, errors.New("refresh-failed") },
 			func() (icebergTable, error) { return fakeTable{ver: 5}, nil },
 		)
@@ -526,7 +527,7 @@ func TestPickTableForState(t *testing.T) {
 
 	t.Run("returns_commit_error_when_all_sources_fail", func(t *testing.T) {
 		commitErr := errors.New("commit-failed")
-		_, err := pickTableForState(nil, nil, commitErr,
+		_, err := pickTableForState(context.TODO(), nil, commitErr,
 			func() (icebergTable, error) { return nil, errors.New("refresh-failed") },
 			func() (icebergTable, error) { return nil, errors.New("reload-failed") },
 		)
