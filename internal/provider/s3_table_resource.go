@@ -442,6 +442,34 @@ func (r *S3TableResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
+// partitionsMatch returns true when got contains exactly the same set of
+// partition fields as want, ignoring order. Void transforms in got are skipped
+// (they are remnants of partition evolution, not active partition fields).
+// Comparison is by Name, SourceName, and Transform.
+func partitionsMatch(want, got []PartitionModel) bool {
+	// Build a map of active (non-void) partitions from got, keyed by name.
+	active := make(map[string]PartitionModel, len(got))
+	for _, p := range got {
+		if p.Transform.ValueString() == "void" {
+			continue
+		}
+		active[p.Name.ValueString()] = p
+	}
+	if len(active) != len(want) {
+		return false
+	}
+	for _, p := range want {
+		g, ok := active[p.Name.ValueString()]
+		if !ok {
+			return false
+		}
+		if g.SourceName != p.SourceName || g.Transform != p.Transform {
+			return false
+		}
+	}
+	return true
+}
+
 // refreshUntilConsistent retries refreshAndRead with exponential backoff until
 // the returned model's Fields and Partitions match wantFields/wantPartitions,
 // or maxRetries attempts are exhausted. sleepFn is injectable for testing.
@@ -468,7 +496,7 @@ func refreshUntilConsistent(
 			lastErr = err
 			continue
 		}
-		if reflect.DeepEqual(model.Fields, wantFields) && reflect.DeepEqual(model.Partitions, wantPartitions) {
+		if reflect.DeepEqual(model.Fields, wantFields) && partitionsMatch(wantPartitions, model.Partitions) {
 			return model, nil
 		}
 		lastErr = fmt.Errorf("table metadata not consistent after %d attempt(s)", attempt+1)

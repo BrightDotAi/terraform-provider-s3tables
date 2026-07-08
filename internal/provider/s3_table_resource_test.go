@@ -949,4 +949,143 @@ func TestRefreshUntilConsistent(t *testing.T) {
 			t.Errorf("expected 'persistent error', got %v", err)
 		}
 	})
+
+	t.Run("partitions_in_different_order_match_immediately", func(t *testing.T) {
+		want := []PartitionModel{
+			pm("ts", "hour", "ts_hour"),
+			pm("id", "identity", "id_part"),
+		}
+		// Catalog returns same partitions but reversed.
+		got := []PartitionModel{
+			pm("id", "identity", "id_part"),
+			pm("ts", "hour", "ts_hour"),
+		}
+		model := &S3TableResourceModel{Fields: wantFields, Partitions: got, FormatVersion: types.StringValue("2")}
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			return model, nil
+		}
+		_, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, want, 4, time.Millisecond,
+			func(time.Duration) {})
+		if err != nil {
+			t.Fatalf("unexpected error for reordered partitions: %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("refreshAndRead called %d times, want 1 (matched on first attempt)", calls)
+		}
+	})
+
+	t.Run("void_partition_in_got_ignored_match_succeeds", func(t *testing.T) {
+		// Catalog returns the new active partition plus the old void partition from
+		// partition spec evolution. Should still match.
+		gotWithVoid := &S3TableResourceModel{
+			Fields: wantFields,
+			Partitions: []PartitionModel{
+				pm("ts", "void", "ts_month"), // old voided field
+				pm("ts", "hour", "ts_hour"),  // new active field
+			},
+			FormatVersion: types.StringValue("2"),
+		}
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			return gotWithVoid, nil
+		}
+		_, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 4, time.Millisecond,
+			func(time.Duration) {})
+		if err != nil {
+			t.Fatalf("unexpected error when got contains void partition: %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("refreshAndRead called %d times, want 1", calls)
+		}
+	})
+}
+
+func TestPartitionsMatch(t *testing.T) {
+	pm := func(src, transform, name string) PartitionModel {
+		return PartitionModel{
+			SourceName: types.StringValue(src),
+			Transform:  types.StringValue(transform),
+			Name:       types.StringValue(name),
+		}
+	}
+
+	tests := []struct {
+		name string
+		want []PartitionModel
+		got  []PartitionModel
+		match bool
+	}{
+		{
+			name:  "identical_same_order",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "identical_different_order",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			got:   []PartitionModel{pm("id", "identity", "id_part"), pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "void_in_got_filtered_still_matches",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "void", "ts_month"), pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "all_void_in_got_matches_empty_want",
+			want:  nil,
+			got:   []PartitionModel{pm("ts", "void", "ts_month")},
+			match: true,
+		},
+		{
+			name:  "both_empty",
+			want:  nil,
+			got:   nil,
+			match: true,
+		},
+		{
+			name:  "different_transform",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "month", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "different_source_name",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("created_at", "hour", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "extra_active_field_in_got",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			match: false,
+		},
+		{
+			name:  "missing_field_in_got",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "name_mismatch",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour_renamed")},
+			match: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := partitionsMatch(tt.want, tt.got)
+			if got != tt.match {
+				t.Errorf("partitionsMatch() = %v, want %v", got, tt.match)
+			}
+		})
+	}
 }
