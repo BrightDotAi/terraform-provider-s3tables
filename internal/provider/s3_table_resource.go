@@ -394,17 +394,7 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Instead will refresh table and reload state to confirm updates have been
 	// applied correctly.
 
-	refreshAndRead := func(ctx context.Context) (*S3TableResourceModel, error) {
-		if err := tbl.Refresh(ctx); err != nil {
-			return nil, err
-		}
-		var tmp S3TableResourceModel
-		if err := setModelFromTable(&tmp, tbl); err != nil {
-			return nil, err
-		}
-		return &tmp, nil
-	}
-	result, err := refreshUntilConsistent(ctx, refreshAndRead, plan.Fields, plan.Partitions, 4, 1*time.Second, time.Sleep)
+	result, err := refreshUntilConsistent(ctx, tbl, plan, 4, 1*time.Second, time.Sleep)
 	if err != nil {
 		resp.Diagnostics.AddError("Error loading iceberg table after commit", err.Error())
 		return
@@ -470,14 +460,13 @@ func partitionsMatch(want, got []PartitionModel) bool {
 	return true
 }
 
-// refreshUntilConsistent retries refreshAndRead with exponential backoff until
-// the returned model's Fields and Partitions match wantFields/wantPartitions,
-// or maxRetries attempts are exhausted. sleepFn is injectable for testing.
+// refreshUntilConsistent retries tbl.Refresh with exponential backoff until
+// the table metadata matches plan.Fields/plan.Partitions, or maxRetries are exhausted.
+// sleepFn is injectable for testing.
 func refreshUntilConsistent(
 	ctx context.Context,
-	refreshAndRead func(context.Context) (*S3TableResourceModel, error),
-	wantFields []FieldModel,
-	wantPartitions []PartitionModel,
+	tbl *itable.Table,
+	plan S3TableResourceModel,
 	maxRetries int,
 	initialBackoff time.Duration,
 	sleepFn func(time.Duration),
@@ -491,13 +480,17 @@ func refreshUntilConsistent(
 			sleepFn(backoff)
 			backoff *= 2
 		}
-		model, err := refreshAndRead(ctx)
-		if err != nil {
+		if err := tbl.Refresh(ctx); err != nil {
 			lastErr = err
 			continue
 		}
-		if reflect.DeepEqual(model.Fields, wantFields) && partitionsMatch(wantPartitions, model.Partitions) {
-			return model, nil
+		var model S3TableResourceModel
+		if err := setModelFromTable(&model, tbl); err != nil {
+			lastErr = err
+			continue
+		}
+		if reflect.DeepEqual(model.Fields, plan.Fields) && partitionsMatch(plan.Partitions, model.Partitions) {
+			return &model, nil
 		}
 		lastErr = fmt.Errorf("table metadata not consistent after %d attempt(s)", attempt+1)
 	}
