@@ -8,8 +8,8 @@ import (
 	"flag"
 	"log"
 
-	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/BrightDotAi/terraform-provider-s3tables/internal/provider"
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 )
 
 var (

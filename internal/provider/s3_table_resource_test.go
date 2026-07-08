@@ -4,9 +4,13 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"math/big"
+	"reflect"
 	"testing"
+	"time"
 
 	iceberg "github.com/apache/iceberg-go"
 	itable "github.com/apache/iceberg-go/table"
@@ -394,7 +398,7 @@ func TestBuildProperties(t *testing.T) {
 func TestPropertiesToPropertyModels(t *testing.T) {
 	t.Run("default_props_filtered_out", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "zstd",
 		}
 		models := propertiesToPropertyModels(props)
@@ -405,8 +409,8 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("non_default_props_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":                      "iceberg",
-			"write_compression":               "zstd",
+			"table_type":                       "iceberg",
+			"write_compression":                "zstd",
 			"write.metadata.compression-codec": "gzip",
 		}
 		models := propertiesToPropertyModels(props)
@@ -423,7 +427,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("overridden_default_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "snappy",
 		}
 		models := propertiesToPropertyModels(props)
@@ -518,8 +522,8 @@ type mockTransaction struct {
 	partition *mockPartitionUpdater
 }
 
-func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater    { return m.schema }
-func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater       { return m.partition }
+func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater { return m.schema }
+func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater   { return m.partition }
 
 // ── Apply* unit tests ─────────────────────────────────────────────────────────
 
@@ -793,6 +797,157 @@ func TestUpdate_PropertyChanges(t *testing.T) {
 		plan := []PropertyModel{planJSON("cfg", `{"a":2}`)}
 		if err := checkPropChanges(state, plan); err == nil {
 			t.Error("expected error for semantically different JSON, got nil")
+		}
+	})
+}
+
+func TestRefreshUntilConsistent(t *testing.T) {
+	ctx := context.Background()
+
+	pm := func(src, transform, name string) PartitionModel {
+		return PartitionModel{
+			SourceName: types.StringValue(src),
+			Transform:  types.StringValue(transform),
+			Name:       types.StringValue(name),
+		}
+	}
+	fm := func(name string) FieldModel {
+		return FieldModel{
+			Name:          types.StringValue(name),
+			Type:          types.StringValue("string"),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(),
+			DefaultNumber: types.NumberNull(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
+		}
+	}
+
+	wantFields := []FieldModel{fm("id")}
+	wantPartitions := []PartitionModel{pm("ts", "hour", "ts_hour")}
+
+	consistentModel := &S3TableResourceModel{
+		Fields:        wantFields,
+		Partitions:    wantPartitions,
+		FormatVersion: types.StringValue("2"),
+	}
+	staleModel := &S3TableResourceModel{
+		Fields:        wantFields,
+		Partitions:    []PartitionModel{pm("ts", "month", "ts_month")},
+		FormatVersion: types.StringValue("2"),
+	}
+
+	t.Run("consistent_on_first_attempt_no_sleep", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			return consistentModel, nil
+		}
+		result, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 4, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("refreshAndRead called %d times, want 1", calls)
+		}
+		if len(sleepCalls) != 0 {
+			t.Errorf("sleep called %d times, want 0", len(sleepCalls))
+		}
+		if result == nil || !reflect.DeepEqual(result.Partitions, wantPartitions) {
+			t.Errorf("result partitions mismatch: %v", result)
+		}
+	})
+
+	t.Run("stale_then_consistent_sleeps_once", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			if calls == 1 {
+				return staleModel, nil
+			}
+			return consistentModel, nil
+		}
+		result, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 4, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 2 {
+			t.Errorf("refreshAndRead called %d times, want 2", calls)
+		}
+		if len(sleepCalls) != 1 || sleepCalls[0] != time.Second {
+			t.Errorf("sleep calls = %v, want [1s]", sleepCalls)
+		}
+		if result == nil || !reflect.DeepEqual(result.Partitions, wantPartitions) {
+			t.Errorf("result partitions mismatch: %v", result)
+		}
+	})
+
+	t.Run("exponential_backoff_doubles_each_retry", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		// Always stale — exhaust retries to collect all sleep values.
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			return staleModel, nil
+		}
+		_, _ = refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 3, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		want := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second}
+		// 3 retries → 3 sleeps; values should double: 1s, 2s, 4s
+		want = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		if !reflect.DeepEqual(sleepCalls, want) {
+			t.Errorf("sleep sequence = %v, want %v", sleepCalls, want)
+		}
+	})
+
+	t.Run("never_consistent_returns_error", func(t *testing.T) {
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			return staleModel, nil
+		}
+		_, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 3, time.Millisecond,
+			func(time.Duration) {})
+		if err == nil {
+			t.Error("expected error when metadata never consistent, got nil")
+		}
+		if calls != 4 {
+			t.Errorf("refreshAndRead called %d times, want 4 (1 initial + 3 retries)", calls)
+		}
+	})
+
+	t.Run("refresh_error_retried_then_succeeds", func(t *testing.T) {
+		calls := 0
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			calls++
+			if calls < 3 {
+				return nil, fmt.Errorf("transient error")
+			}
+			return consistentModel, nil
+		}
+		result, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 4, time.Millisecond,
+			func(time.Duration) {})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 3 {
+			t.Errorf("refreshAndRead called %d times, want 3", calls)
+		}
+		if result == nil || !reflect.DeepEqual(result.Partitions, wantPartitions) {
+			t.Errorf("result partitions mismatch: %v", result)
+		}
+	})
+
+	t.Run("refresh_error_all_attempts_returns_last_error", func(t *testing.T) {
+		refreshAndRead := func(_ context.Context) (*S3TableResourceModel, error) {
+			return nil, fmt.Errorf("persistent error")
+		}
+		_, err := refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 2, time.Millisecond,
+			func(time.Duration) {})
+		if err == nil || err.Error() != "persistent error" {
+			t.Errorf("expected 'persistent error', got %v", err)
 		}
 	})
 }
