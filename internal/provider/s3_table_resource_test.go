@@ -894,9 +894,8 @@ func TestRefreshUntilConsistent(t *testing.T) {
 		}
 		_, _ = refreshUntilConsistent(ctx, refreshAndRead, wantFields, wantPartitions, 3, time.Second,
 			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
-		want := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second}
 		// 3 retries → 3 sleeps; values should double: 1s, 2s, 4s
-		want = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		want := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 		if !reflect.DeepEqual(sleepCalls, want) {
 			t.Errorf("sleep sequence = %v, want %v", sleepCalls, want)
 		}
