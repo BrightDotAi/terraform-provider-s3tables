@@ -139,16 +139,16 @@ type LakeFormationPermissionsResourceModel struct {
 }
 
 type CatalogPermModel struct {
-	ID                   types.String      `tfsdk:"id"`
-	Permissions          *Permissions      `tfsdk:"permissions"`
-	GrantablePermissions *Permissions      `tfsdk:"grantable_permissions"`
+	ID                   types.String        `tfsdk:"id"`
+	Permissions          *Permissions        `tfsdk:"permissions"`
+	GrantablePermissions *Permissions        `tfsdk:"grantable_permissions"`
 	Database             []DatabasePermModel `tfsdk:"database"`
 }
 
 type DatabasePermModel struct {
-	Name                 types.String    `tfsdk:"name"`
-	Permissions          *Permissions    `tfsdk:"permissions"`
-	GrantablePermissions *Permissions    `tfsdk:"grantable_permissions"`
+	Name                 types.String     `tfsdk:"name"`
+	Permissions          *Permissions     `tfsdk:"permissions"`
+	GrantablePermissions *Permissions     `tfsdk:"grantable_permissions"`
 	Table                []TablePermModel `tfsdk:"table"`
 	Wildcard             *TablePermModel  `tfsdk:"wildcard"`
 }
@@ -173,7 +173,9 @@ func (resolveUnknownToNull) Description(_ context.Context) string {
 	return "Resolves unknown object plan values to null."
 }
 
-func (m resolveUnknownToNull) MarkdownDescription(ctx context.Context) string { return m.Description(ctx) }
+func (m resolveUnknownToNull) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
 
 func (resolveUnknownToNull) PlanModifyObject(ctx context.Context, req planmodifier.ObjectRequest, resp *planmodifier.ObjectResponse) {
 	if req.PlanValue.IsUnknown() {

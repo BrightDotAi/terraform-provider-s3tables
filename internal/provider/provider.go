@@ -29,7 +29,7 @@ type BrightAIProvider struct {
 
 // BrightAIProviderModel describes the provider data model.
 type BrightAIProviderModel struct {
-	Region types.String `tfsdk:"region"`
+	Region  types.String `tfsdk:"region"`
 	Profile types.String `tfsdk:"profile"`
 }
 

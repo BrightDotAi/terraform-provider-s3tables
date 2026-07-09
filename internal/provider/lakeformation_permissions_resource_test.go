@@ -141,7 +141,7 @@ func findRevokeCall(calls []*lakeformation.RevokePermissionsInput, match func(*l
 	return nil
 }
 
-func isCatalogResource(r *lftypes.Resource) bool  { return r != nil && r.Catalog != nil }
+func isCatalogResource(r *lftypes.Resource) bool { return r != nil && r.Catalog != nil }
 func isDatabaseResource(name string) func(*lftypes.Resource) bool {
 	return func(r *lftypes.Resource) bool {
 		return r != nil && r.Database != nil && aws.ToString(r.Database.Name) == name
@@ -589,7 +589,7 @@ func TestNoDriftForOmittedPermissions(t *testing.T) {
 		if got.Insert != true {
 			t.Errorf("Insert covered by ALL: want true, got %v", got.Insert)
 		}
-		if !got.Alter== false {
+		if !got.Alter == false {
 			t.Errorf("undeclared Alter: want null even when ALL granted, got %v", got.Alter)
 		}
 	})
@@ -2345,7 +2345,6 @@ func TestDelete(t *testing.T) {
 		}
 	})
 }
-
 
 // ── ValidateResource ─────────────────────────────────────────────────────────
 

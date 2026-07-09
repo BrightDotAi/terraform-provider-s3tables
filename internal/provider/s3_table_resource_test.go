@@ -394,7 +394,7 @@ func TestBuildProperties(t *testing.T) {
 func TestPropertiesToPropertyModels(t *testing.T) {
 	t.Run("default_props_filtered_out", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "zstd",
 		}
 		models := propertiesToPropertyModels(props)
@@ -405,8 +405,8 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("non_default_props_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":                      "iceberg",
-			"write_compression":               "zstd",
+			"table_type":                       "iceberg",
+			"write_compression":                "zstd",
 			"write.metadata.compression-codec": "gzip",
 		}
 		models := propertiesToPropertyModels(props)
@@ -423,7 +423,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 
 	t.Run("overridden_default_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":       "iceberg",
+			"table_type":        "iceberg",
 			"write_compression": "snappy",
 		}
 		models := propertiesToPropertyModels(props)
@@ -518,8 +518,8 @@ type mockTransaction struct {
 	partition *mockPartitionUpdater
 }
 
-func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater    { return m.schema }
-func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater       { return m.partition }
+func (m *mockTransaction) UpdateSchema(_, _ bool) schemaUpdater { return m.schema }
+func (m *mockTransaction) UpdateSpec(_ bool) partitionUpdater   { return m.partition }
 
 // ── Apply* unit tests ─────────────────────────────────────────────────────────
 
@@ -795,4 +795,91 @@ func TestUpdate_PropertyChanges(t *testing.T) {
 			t.Error("expected error for semantically different JSON, got nil")
 		}
 	})
+}
+
+func TestPartitionsMatch(t *testing.T) {
+	pm := func(src, transform, name string) PartitionModel {
+		return PartitionModel{
+			SourceName: types.StringValue(src),
+			Transform:  types.StringValue(transform),
+			Name:       types.StringValue(name),
+		}
+	}
+
+	tests := []struct {
+		name string
+		want []PartitionModel
+		got  []PartitionModel
+		match bool
+	}{
+		{
+			name:  "identical_same_order",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "identical_different_order",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			got:   []PartitionModel{pm("id", "identity", "id_part"), pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "void_in_got_filtered_still_matches",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "void", "ts_month"), pm("ts", "hour", "ts_hour")},
+			match: true,
+		},
+		{
+			name:  "all_void_in_got_matches_empty_want",
+			want:  nil,
+			got:   []PartitionModel{pm("ts", "void", "ts_month")},
+			match: true,
+		},
+		{
+			name:  "both_empty",
+			want:  nil,
+			got:   nil,
+			match: true,
+		},
+		{
+			name:  "different_transform",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "month", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "different_source_name",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("created_at", "hour", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "extra_active_field_in_got",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			match: false,
+		},
+		{
+			name:  "missing_field_in_got",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour"), pm("id", "identity", "id_part")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour")},
+			match: false,
+		},
+		{
+			name:  "name_mismatch",
+			want:  []PartitionModel{pm("ts", "hour", "ts_hour")},
+			got:   []PartitionModel{pm("ts", "hour", "ts_hour_renamed")},
+			match: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := partitionsMatch(tt.want, tt.got)
+			if got != tt.match {
+				t.Errorf("partitionsMatch() = %v, want %v", got, tt.match)
+			}
+		})
+	}
 }
