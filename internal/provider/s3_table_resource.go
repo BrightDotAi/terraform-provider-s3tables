@@ -44,6 +44,10 @@ func NewS3TableResource() resource.Resource {
 	return &S3TableResource{}
 }
 
+// refreshMaxRetries is the maximum number of retries when waiting for table
+// metadata to become consistent after a commit.
+const refreshMaxRetries = 8
+
 // Property defaults added to table automatically
 
 var prop_defaults = map[string]string{
@@ -394,7 +398,7 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 	// Instead will refresh table and reload state to confirm updates have been
 	// applied correctly.
 
-	result, err := refreshUntilConsistent(ctx, tbl, plan, 4, 1*time.Second, time.Sleep)
+	result, err := refreshUntilConsistent(ctx, cat, identifier, plan, 1*time.Second, time.Sleep)
 	if err != nil {
 		resp.Diagnostics.AddError("Error loading iceberg table after commit", err.Error())
 		return
@@ -460,27 +464,28 @@ func partitionsMatch(want, got []PartitionModel) bool {
 	return true
 }
 
-// refreshUntilConsistent retries tbl.Refresh with exponential backoff until
-// the table metadata matches plan.Fields/plan.Partitions, or maxRetries are exhausted.
-// sleepFn is injectable for testing.
+// refreshUntilConsistent loads the table fresh from the catalog on each attempt
+// with exponential backoff until metadata matches plan.Fields/plan.Partitions,
+// or refreshMaxRetries are exhausted. sleepFn is injectable for testing.
 func refreshUntilConsistent(
 	ctx context.Context,
-	tbl *itable.Table,
+	cat catalog.Catalog,
+	identifier itable.Identifier,
 	plan S3TableResourceModel,
-	maxRetries int,
 	initialBackoff time.Duration,
 	sleepFn func(time.Duration),
 ) (*S3TableResourceModel, error) {
 	backoff := initialBackoff
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= refreshMaxRetries; attempt++ {
 		if attempt > 0 {
-			tflog.Debug(ctx, "metadata not yet consistent after commit, retrying refresh",
+			tflog.Debug(ctx, "metadata not yet consistent after commit, retrying",
 				map[string]any{"attempt": attempt, "backoff_ms": backoff.Milliseconds()})
 			sleepFn(backoff)
 			backoff *= 2
 		}
-		if err := tbl.Refresh(ctx); err != nil {
+		tbl, err := cat.LoadTable(ctx, identifier)
+		if err != nil {
 			lastErr = err
 			continue
 		}

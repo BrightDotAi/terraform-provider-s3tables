@@ -4,11 +4,17 @@
 package provider
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"iter"
 	"math/big"
+	"reflect"
 	"testing"
+	"time"
 
 	iceberg "github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/catalog"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -882,4 +888,249 @@ func TestPartitionsMatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── mockCatalog ───────────────────────────────────────────────────────────────
+
+// mockCatalog implements catalog.Catalog for testing refreshUntilConsistent.
+// Only LoadTable is functional; all other methods panic.
+type mockCatalog struct {
+	loadTableFn func(ctx context.Context, id itable.Identifier) (*itable.Table, error)
+}
+
+func (m *mockCatalog) LoadTable(ctx context.Context, id itable.Identifier) (*itable.Table, error) {
+	return m.loadTableFn(ctx, id)
+}
+func (m *mockCatalog) CatalogType() catalog.Type                { panic("not implemented") }
+func (m *mockCatalog) CreateTable(_ context.Context, _ itable.Identifier, _ *iceberg.Schema, _ ...catalog.CreateTableOpt) (*itable.Table, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) CommitTable(_ context.Context, _ itable.Identifier, _ []itable.Requirement, _ []itable.Update) (itable.Metadata, string, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) ListTables(_ context.Context, _ itable.Identifier) iter.Seq2[itable.Identifier, error] {
+	panic("not implemented")
+}
+func (m *mockCatalog) DropTable(_ context.Context, _ itable.Identifier) error {
+	panic("not implemented")
+}
+func (m *mockCatalog) RenameTable(_ context.Context, _, _ itable.Identifier) (*itable.Table, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) CheckTableExists(_ context.Context, _ itable.Identifier) (bool, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) ListNamespaces(_ context.Context, _ itable.Identifier) ([]itable.Identifier, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) CreateNamespace(_ context.Context, _ itable.Identifier, _ iceberg.Properties) error {
+	panic("not implemented")
+}
+func (m *mockCatalog) DropNamespace(_ context.Context, _ itable.Identifier) error {
+	panic("not implemented")
+}
+func (m *mockCatalog) CheckNamespaceExists(_ context.Context, _ itable.Identifier) (bool, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) LoadNamespaceProperties(_ context.Context, _ itable.Identifier) (iceberg.Properties, error) {
+	panic("not implemented")
+}
+func (m *mockCatalog) UpdateNamespaceProperties(_ context.Context, _ itable.Identifier, _ []string, _ iceberg.Properties) (catalog.PropertiesUpdateSummary, error) {
+	panic("not implemented")
+}
+
+// buildTestTable constructs a minimal *itable.Table from FieldModels and PartitionModels.
+func buildTestTable(t *testing.T, fields []FieldModel, partitions []PartitionModel) *itable.Table {
+	t.Helper()
+	schema, err := BuildSchema(fields)
+	if err != nil {
+		t.Fatalf("BuildSchema: %v", err)
+	}
+	spec, err := BuildPartitionSpec(partitions, schema)
+	if err != nil {
+		t.Fatalf("BuildPartitionSpec: %v", err)
+	}
+	builder, err := itable.NewMetadataBuilder(2)
+	if err != nil {
+		t.Fatalf("NewMetadataBuilder: %v", err)
+	}
+	if err := builder.AddSchema(schema); err != nil {
+		t.Fatalf("AddSchema: %v", err)
+	}
+	if err := builder.SetCurrentSchemaID(0); err != nil {
+		t.Fatalf("SetCurrentSchemaID: %v", err)
+	}
+	if err := builder.AddPartitionSpec(spec, true); err != nil {
+		t.Fatalf("AddPartitionSpec: %v", err)
+	}
+	if err := builder.SetDefaultSpecID(spec.ID()); err != nil {
+		t.Fatalf("SetDefaultSpecID: %v", err)
+	}
+	sortOrder := itable.UnsortedSortOrder
+	if err := builder.AddSortOrder(&sortOrder); err != nil {
+		t.Fatalf("AddSortOrder: %v", err)
+	}
+	if err := builder.SetDefaultSortOrderID(itable.UnsortedSortOrderID); err != nil {
+		t.Fatalf("SetDefaultSortOrderID: %v", err)
+	}
+	meta, err := builder.Build()
+	if err != nil {
+		t.Fatalf("MetadataBuilder.Build: %v", err)
+	}
+	return itable.New(itable.Identifier{"ns", "tbl"}, meta, "", nil, nil)
+}
+
+func TestRefreshUntilConsistent(t *testing.T) {
+	ctx := context.Background()
+	identifier := itable.Identifier{"ns", "tbl"}
+
+	fm := func(name string) FieldModel {
+		return FieldModel{
+			Name:          types.StringValue(name),
+			Type:          types.StringValue("string"),
+			Required:      types.BoolValue(false),
+			DefaultString: types.StringNull(),
+			DefaultNumber: types.NumberNull(),
+			DefaultBool:   types.BoolNull(),
+			Doc:           types.StringValue(""),
+		}
+	}
+	pm := func(src, transform, name string) PartitionModel {
+		return PartitionModel{
+			SourceName: types.StringValue(src),
+			Transform:  types.StringValue(transform),
+			Name:       types.StringValue(name),
+		}
+	}
+
+	wantFields := []FieldModel{fm("id"), fm("ts")}
+	wantPartitions := []PartitionModel{pm("ts", "identity", "ts_part")}
+
+	plan := S3TableResourceModel{Fields: wantFields, Partitions: wantPartitions}
+
+	consistentTbl := buildTestTable(t, wantFields, wantPartitions)
+
+	staleFields := []FieldModel{fm("id"), fm("ts")}
+	stalePartitions := []PartitionModel{pm("ts", "identity", "ts_stale")}
+	staleTbl := buildTestTable(t, staleFields, stalePartitions)
+
+	t.Run("consistent_on_first_attempt_no_sleep", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			return consistentTbl, nil
+		}}
+		result, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("LoadTable called %d times, want 1", calls)
+		}
+		if len(sleepCalls) != 0 {
+			t.Errorf("sleep called %d times, want 0", len(sleepCalls))
+		}
+		if result == nil {
+			t.Fatal("result is nil")
+		}
+	})
+
+	t.Run("stale_then_consistent_sleeps_once", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			if calls == 1 {
+				return staleTbl, nil
+			}
+			return consistentTbl, nil
+		}}
+		result, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 2 {
+			t.Errorf("LoadTable called %d times, want 2", calls)
+		}
+		if len(sleepCalls) != 1 || sleepCalls[0] != time.Second {
+			t.Errorf("sleep calls = %v, want [1s]", sleepCalls)
+		}
+		if result == nil {
+			t.Fatal("result is nil")
+		}
+	})
+
+	t.Run("load_error_retried_then_succeeds", func(t *testing.T) {
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			if calls < 3 {
+				return nil, fmt.Errorf("transient catalog error")
+			}
+			return consistentTbl, nil
+		}}
+		result, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Millisecond,
+			func(time.Duration) {})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 3 {
+			t.Errorf("LoadTable called %d times, want 3", calls)
+		}
+		if result == nil {
+			t.Fatal("result is nil")
+		}
+	})
+
+	t.Run("always_stale_exhausts_retries_returns_error", func(t *testing.T) {
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			return staleTbl, nil
+		}}
+		_, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Millisecond,
+			func(time.Duration) {})
+		if err == nil {
+			t.Error("expected error when never consistent, got nil")
+		}
+		if calls != refreshMaxRetries+1 {
+			t.Errorf("LoadTable called %d times, want %d (1 initial + %d retries)", calls, refreshMaxRetries+1, refreshMaxRetries)
+		}
+	})
+
+	t.Run("exponential_backoff_doubles_each_retry", func(t *testing.T) {
+		var sleepCalls []time.Duration
+		// Return stale for first 3 attempts, then consistent.
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			if calls <= 3 {
+				return staleTbl, nil
+			}
+			return consistentTbl, nil
+		}}
+		_, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Second,
+			func(d time.Duration) { sleepCalls = append(sleepCalls, d) })
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		if !reflect.DeepEqual(sleepCalls, want) {
+			t.Errorf("sleep sequence = %v, want %v", sleepCalls, want)
+		}
+	})
+
+	t.Run("persistent_load_error_returns_last_error", func(t *testing.T) {
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			return nil, fmt.Errorf("persistent error")
+		}}
+		_, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Millisecond,
+			func(time.Duration) {})
+		if err == nil || err.Error() != "persistent error" {
+			t.Errorf("expected 'persistent error', got %v", err)
+		}
+	})
 }
