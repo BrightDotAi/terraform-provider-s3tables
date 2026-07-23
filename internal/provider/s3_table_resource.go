@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -151,8 +152,15 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							MarkdownDescription: "Column name.",
+							MarkdownDescription: "Column name. Must contain only lowercase letters, digits, and underscores, and must not start with a digit. AWS S3 Tables normalizes column names to lowercase and does not support uppercase letters.",
 							Required:            true,
+							Validators: []validator.String{
+								stringvalidator.LengthBetween(1, 255),
+								stringvalidator.RegexMatches(
+									regexp.MustCompile(`^[a-z_][a-z0-9_]*$`),
+									"must start with a lowercase letter or underscore and contain only lowercase letters, digits, and underscores",
+								),
+							},
 						},
 						"type": schema.StringAttribute{
 							MarkdownDescription: "Iceberg type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`.",
