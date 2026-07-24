@@ -10,12 +10,17 @@ import (
 	"iter"
 	"math/big"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	itable "github.com/apache/iceberg-go/table"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	fwpath "github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -885,6 +890,65 @@ func TestPartitionsMatch(t *testing.T) {
 			got := partitionsMatch(tt.want, tt.got)
 			if got != tt.match {
 				t.Errorf("partitionsMatch() = %v, want %v", got, tt.match)
+			}
+		})
+	}
+}
+
+func TestFieldNameValidator(t *testing.T) {
+	fieldNameValidator := stringvalidator.All(
+		stringvalidator.LengthBetween(1, 255),
+		stringvalidator.RegexMatches(
+			regexp.MustCompile(`^[a-z_][a-z0-9_]*$`),
+			"must start with a lowercase letter or underscore and contain only lowercase letters, digits, and underscores",
+		),
+	)
+
+	validate := func(value string) bool {
+		req := validator.StringRequest{
+			Path:           fwpath.Root("name"),
+			PathExpression: fwpath.MatchRoot("name"),
+			ConfigValue:    types.StringValue(value),
+		}
+		resp := validator.StringResponse{}
+		fieldNameValidator.ValidateString(context.Background(), req, &resp)
+		return !resp.Diagnostics.HasError()
+	}
+
+	valid := []string{
+		"id",
+		"user_name",
+		"_internal",
+		"col1",
+		"a",
+		"a1_b2_c3",
+		strings.Repeat("a", 255),
+	}
+	for _, name := range valid {
+		if !validate(name) {
+			t.Errorf("expected %q to be valid, got error", name)
+		}
+	}
+
+	invalid := []struct {
+		name  string
+		value string
+	}{
+		{"uppercase_letter", "UserName"},
+		{"all_uppercase", "FIELD"},
+		{"mixed_case", "HealthSafetyEmployeeSafetyIncidents"},
+		{"trailing_uppercase", "my_fieldA"},
+		{"starts_with_digit", "1col"},
+		{"contains_hyphen", "col-name"},
+		{"contains_space", "col name"},
+		{"contains_dot", "col.name"},
+		{"empty", ""},
+		{"too_long", strings.Repeat("a", 256)},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if validate(tt.value) {
+				t.Errorf("expected %q to be invalid, got no error", tt.value)
 			}
 		})
 	}

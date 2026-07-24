@@ -84,16 +84,26 @@ func NewLakeFormationPermissionsResource() resource.Resource {
 // Permissions is a unified struct for all Lake Formation permission types.
 // All fields default to false when unmarshalled by the framework.
 type Permissions struct {
-	All            bool `tfsdk:"all"`
-	Alter          bool `tfsdk:"alter"`
-	CreateCatalog  bool `tfsdk:"create_catalog"`
-	CreateDatabase bool `tfsdk:"create_database"`
-	CreateTable    bool `tfsdk:"create_table"`
-	Delete         bool `tfsdk:"delete"`
-	Describe       bool `tfsdk:"describe"`
-	Drop           bool `tfsdk:"drop"`
-	Insert         bool `tfsdk:"insert"`
-	Select         bool `tfsdk:"select"`
+	All            types.Bool `tfsdk:"all"`
+	Alter          types.Bool `tfsdk:"alter"`
+	CreateCatalog  types.Bool `tfsdk:"create_catalog"`
+	CreateDatabase types.Bool `tfsdk:"create_database"`
+	CreateTable    types.Bool `tfsdk:"create_table"`
+	Delete         types.Bool `tfsdk:"delete"`
+	Describe       types.Bool `tfsdk:"describe"`
+	Drop           types.Bool `tfsdk:"drop"`
+	Insert         types.Bool `tfsdk:"insert"`
+	Select         types.Bool `tfsdk:"select"`
+}
+
+// newEmptyPerms returns a Permissions with all fields explicitly false.
+// Required because the zero value of types.Bool is null, not false.
+func newEmptyPerms() *Permissions {
+	f := types.BoolValue(false)
+	return &Permissions{
+		All: f, Alter: f, CreateCatalog: f, CreateDatabase: f, CreateTable: f,
+		Delete: f, Describe: f, Drop: f, Insert: f, Select: f,
+	}
 }
 
 // --- Resource-type enum and valid-permissions map ---
@@ -403,8 +413,8 @@ func checkPerms(p *Permissions, rt LFResourceType, attrPath path.Path, diags *di
 	valid := validPermsForType[rt]
 	perms := permsToAPI(p)
 
-	if p.All {
-		if p.Alter || p.CreateCatalog || p.CreateDatabase || p.CreateTable || p.Delete || p.Describe || p.Drop || p.Insert || p.Select {
+	if p.All.ValueBool() {
+		if p.Alter.ValueBool() || p.CreateCatalog.ValueBool() || p.CreateDatabase.ValueBool() || p.CreateTable.ValueBool() || p.Delete.ValueBool() || p.Describe.ValueBool() || p.Drop.ValueBool() || p.Insert.ValueBool() || p.Select.ValueBool() {
 			diags.AddAttributeError(attrPath.AtName("all"), "Conflicting attributes",
 				"Cannot set 'all' alongside individual permission attributes.")
 		}
@@ -527,7 +537,7 @@ func fillPermPair(perms, grantPerms **Permissions) bool {
 	case *perms == nil && *grantPerms == nil:
 		return false
 	case *perms != nil && *grantPerms == nil:
-		*grantPerms = &Permissions{}
+		*grantPerms = newEmptyPerms()
 		return true
 	case *perms == nil: // grantPerms non-nil
 		cp := **grantPerms
@@ -1178,35 +1188,35 @@ func permsToAPI(p *Permissions) []lftypes.Permission {
 	if p == nil {
 		return nil
 	}
-	if p.All {
+	if p.All.ValueBool() {
 		return []lftypes.Permission{lftypes.PermissionAll}
 	}
 	var out []lftypes.Permission
-	if p.Alter {
+	if p.Alter.ValueBool() {
 		out = append(out, lftypes.PermissionAlter)
 	}
-	if p.CreateCatalog {
+	if p.CreateCatalog.ValueBool() {
 		out = append(out, lftypes.PermissionCreateCatalog)
 	}
-	if p.CreateDatabase {
+	if p.CreateDatabase.ValueBool() {
 		out = append(out, lftypes.PermissionCreateDatabase)
 	}
-	if p.CreateTable {
+	if p.CreateTable.ValueBool() {
 		out = append(out, lftypes.PermissionCreateTable)
 	}
-	if p.Delete {
+	if p.Delete.ValueBool() {
 		out = append(out, lftypes.PermissionDelete)
 	}
-	if p.Describe {
+	if p.Describe.ValueBool() {
 		out = append(out, lftypes.PermissionDescribe)
 	}
-	if p.Drop {
+	if p.Drop.ValueBool() {
 		out = append(out, lftypes.PermissionDrop)
 	}
-	if p.Insert {
+	if p.Insert.ValueBool() {
 		out = append(out, lftypes.PermissionInsert)
 	}
-	if p.Select {
+	if p.Select.ValueBool() {
 		out = append(out, lftypes.PermissionSelect)
 	}
 	return out
@@ -1223,16 +1233,16 @@ func refreshPerms(declared *Permissions, current []lftypes.Permission) *Permissi
 	hasAll := s[lftypes.PermissionAll]
 	active := func(p lftypes.Permission) bool { return s[p] || hasAll }
 	return &Permissions{
-		All:            declared.All && active(lftypes.PermissionAll),
-		Alter:          declared.Alter && active(lftypes.PermissionAlter),
-		CreateCatalog:  declared.CreateCatalog && active(lftypes.PermissionCreateCatalog),
-		CreateDatabase: declared.CreateDatabase && active(lftypes.PermissionCreateDatabase),
-		CreateTable:    declared.CreateTable && active(lftypes.PermissionCreateTable),
-		Delete:         declared.Delete && active(lftypes.PermissionDelete),
-		Describe:       declared.Describe && active(lftypes.PermissionDescribe),
-		Drop:           declared.Drop && active(lftypes.PermissionDrop),
-		Insert:         declared.Insert && active(lftypes.PermissionInsert),
-		Select:         declared.Select && active(lftypes.PermissionSelect),
+		All:            types.BoolValue(declared.All.ValueBool() && active(lftypes.PermissionAll)),
+		Alter:          types.BoolValue(declared.Alter.ValueBool() && active(lftypes.PermissionAlter)),
+		CreateCatalog:  types.BoolValue(declared.CreateCatalog.ValueBool() && active(lftypes.PermissionCreateCatalog)),
+		CreateDatabase: types.BoolValue(declared.CreateDatabase.ValueBool() && active(lftypes.PermissionCreateDatabase)),
+		CreateTable:    types.BoolValue(declared.CreateTable.ValueBool() && active(lftypes.PermissionCreateTable)),
+		Delete:         types.BoolValue(declared.Delete.ValueBool() && active(lftypes.PermissionDelete)),
+		Describe:       types.BoolValue(declared.Describe.ValueBool() && active(lftypes.PermissionDescribe)),
+		Drop:           types.BoolValue(declared.Drop.ValueBool() && active(lftypes.PermissionDrop)),
+		Insert:         types.BoolValue(declared.Insert.ValueBool() && active(lftypes.PermissionInsert)),
+		Select:         types.BoolValue(declared.Select.ValueBool() && active(lftypes.PermissionSelect)),
 	}
 }
 
