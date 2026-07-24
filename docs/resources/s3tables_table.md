@@ -34,7 +34,7 @@ Manages an S3 Tables Iceberg table via the AWS Glue catalog.
 
 Required:
 
-- `name` (String) Column name.
+- `name` (String) Column name. Must contain only lowercase letters, digits, and underscores, and must not start with a digit. AWS S3 Tables normalizes column names to lowercase and does not support uppercase letters.
 - `type` (String) Iceberg type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`.
 
 Optional:
