@@ -66,6 +66,14 @@ func isSuperUserGrantErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Grant options not allowed for SUPER_USER grant")
 }
 
+// isNoPermsRevokedErr reports whether err indicates that the principal did not hold the
+// permissions being revoked. AWS returns this when the state has drifted (permissions were
+// removed externally between our List and Revoke calls). Treating it as a no-op is safe
+// because the desired outcome — the permissions are absent — is already true.
+func isNoPermsRevokedErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "No permissions revoked")
+}
+
 // lfClientIface is the subset of the LF client API used by this resource.
 // *lakeformation.Client satisfies it; tests substitute a mock.
 type lfClientIface interface {
@@ -1112,6 +1120,8 @@ func grantLFPerms(ctx context.Context, client lfClientIface, principal string, r
 
 // revokeLFPerms calls RevokePermissions for a single principal/resource pair; no-ops when both lists are empty.
 // The caller must ensure grantPerms ⊆ perms (enforced by the schema superset constraint).
+// "No permissions revoked" errors are silently swallowed: they mean the permissions were already
+// absent (external drift between List and Revoke), so the desired state is already reached.
 func revokeLFPerms(ctx context.Context, client lfClientIface, principal string, res *lftypes.Resource, perms, grantPerms []lftypes.Permission) error {
 	if len(perms) == 0 && len(grantPerms) == 0 {
 		return nil
@@ -1122,6 +1132,9 @@ func revokeLFPerms(ctx context.Context, client lfClientIface, principal string, 
 		Permissions:                perms,
 		PermissionsWithGrantOption: grantPerms,
 	})
+	if isNoPermsRevokedErr(err) {
+		return nil
+	}
 	return err
 }
 
