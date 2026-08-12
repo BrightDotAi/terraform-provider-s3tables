@@ -1473,6 +1473,18 @@ func TestRevokeLFPerms(t *testing.T) {
 			t.Fatal("expected error from RevokePermissions, got nil")
 		}
 	})
+
+	t.Run("no_permissions_revoked_swallowed", func(t *testing.T) {
+		// AWS returns this when the principal doesn't hold the permissions being revoked
+		// (external drift between list and revoke). Treat as a no-op — desired state already met.
+		noPermsErr := fmt.Errorf("InvalidInputException: No permissions revoked. Grantee does not have grantable permissions on:[DESCRIBE]")
+		mock := &mockLFClient{revokeErr: noPermsErr}
+		if err := revokeLFPerms(ctx, mock, principal, res,
+			[]lftypes.Permission{lftypes.PermissionDescribe},
+			[]lftypes.Permission{lftypes.PermissionDescribe}); err != nil {
+			t.Fatalf("expected no error for 'No permissions revoked', got: %v", err)
+		}
+	})
 }
 
 // ── grantLFPerms ──────────────────────────────────────────────────────────────
@@ -4182,6 +4194,51 @@ func TestUpdatePermissions(t *testing.T) {
 		}
 	})
 
+	t.Run("no_permissions_revoked_error_does_not_block_apply", func(t *testing.T) {
+		// Regression: AWS returns "No permissions revoked. Grantee does not have grantable
+		// permissions on:[DESCRIBE]" when state drifted between List and Revoke. Apply must
+		// succeed because the desired state (DESCRIBE not grantable) is already true.
+		noPermsErr := fmt.Errorf("InvalidInputException: No permissions revoked. Grantee does not have grantable permissions on:[DESCRIBE]")
+		mock := &mockLFClient{
+			listResult: []lftypes.PrincipalResourcePermissions{{
+				Permissions:                []lftypes.Permission{lftypes.PermissionDescribe},
+				PermissionsWithGrantOption: []lftypes.Permission{lftypes.PermissionDescribe},
+			}},
+			revokeErr: noPermsErr,
+		}
+		state := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("grafana_resource_links"),
+					Table: []TablePermModel{{
+						Name:                 types.StringValue("latham_metrics_rl"),
+						Permissions:          &Permissions{Describe: types.BoolValue(true)},
+						GrantablePermissions: &Permissions{Describe: types.BoolValue(true)},
+					}},
+				}},
+			},
+		}
+		plan := &LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name: types.StringValue("grafana_resource_links"),
+					Table: []TablePermModel{{
+						Name:        types.StringValue("latham_metrics_rl"),
+						Permissions: &Permissions{Describe: types.BoolValue(true)},
+						// GrantablePermissions absent → removing grant option
+					}},
+				}},
+			},
+		}
+		if err := updatePermissions(ctx, mock, state, plan); err != nil {
+			t.Fatalf("expected no error when revoke returns 'No permissions revoked', got: %v", err)
+		}
+	})
+
 	t.Run("nil_plan_catalog_no_api_calls", func(t *testing.T) {
 		mock := &mockLFClient{}
 		state := &LakeFormationPermissionsResourceModel{
@@ -4961,6 +5018,33 @@ func TestIsConcurrencyErr(t *testing.T) {
 		err := &lftypes.ConcurrentModificationException{Message: aws.String("concurrent")}
 		if !isConcurrencyErr(err) {
 			t.Error("expected true for ConcurrentModificationException")
+		}
+	})
+}
+
+// ── isNoPermsRevokedErr ───────────────────────────────────────────────────────
+
+func TestIsNoPermsRevokedErr(t *testing.T) {
+	t.Run("nil_returns_false", func(t *testing.T) {
+		if isNoPermsRevokedErr(nil) {
+			t.Error("expected false for nil error")
+		}
+	})
+	t.Run("unrelated_error_returns_false", func(t *testing.T) {
+		if isNoPermsRevokedErr(fmt.Errorf("access denied")) {
+			t.Error("expected false for unrelated error")
+		}
+	})
+	t.Run("matching_error_returns_true", func(t *testing.T) {
+		err := fmt.Errorf("InvalidInputException: No permissions revoked. Grantee does not have grantable permissions on:[DESCRIBE]")
+		if !isNoPermsRevokedErr(err) {
+			t.Error("expected true for 'No permissions revoked' error")
+		}
+	})
+	t.Run("partial_match_returns_true", func(t *testing.T) {
+		err := fmt.Errorf("StatusCode: 400, RequestID: abc, InvalidInputException: No permissions revoked. Grantee does not have permissions on:[SELECT]")
+		if !isNoPermsRevokedErr(err) {
+			t.Error("expected true for partial-match 'No permissions revoked' error")
 		}
 	})
 }
