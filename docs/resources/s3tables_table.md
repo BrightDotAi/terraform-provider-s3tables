@@ -51,29 +51,23 @@ Optional:
 <a id="nestedblock--field--list_type"></a>
 ### Nested Schema for `field.list_type`
 
-Required:
-
-- `type` (String) Primitive type of list elements.
-
 Optional:
 
 - `id` (Number) Iceberg element field ID. Optional; if any nested type IDs are set across the table, all must be set and globally unique.
 - `required` (Boolean) Whether list elements are non-nullable. Defaults to `true`.
+- `type` (String) Primitive type of list elements. Required when `list_type` block is set.
 
 
 <a id="nestedblock--field--map_type"></a>
 ### Nested Schema for `field.map_type`
 
-Required:
-
-- `key_type` (String) Primitive type of map keys.
-- `value_type` (String) Primitive type of map values.
-
 Optional:
 
 - `key_id` (Number) Iceberg key field ID. Optional; must be set together with `value_id` if any nested type IDs are set.
+- `key_type` (String) Primitive type of map keys. Required when `map_type` block is set.
 - `required` (Boolean) Whether map values are non-nullable. Defaults to `true`.
 - `value_id` (Number) Iceberg value field ID. Optional; must be set together with `key_id` if any nested type IDs are set.
+- `value_type` (String) Primitive type of map values. Required when `map_type` block is set.
 
 
 <a id="nestedblock--field--struct_type"></a>
