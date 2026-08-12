@@ -35,7 +35,6 @@ Manages an S3 Tables Iceberg table via the AWS Glue catalog.
 Required:
 
 - `name` (String) Column name. Must contain only lowercase letters, digits, and underscores, and must not start with a digit. AWS S3 Tables normalizes column names to lowercase and does not support uppercase letters.
-- `type` (String) Iceberg type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`.
 
 Optional:
 
@@ -43,7 +42,62 @@ Optional:
 - `default_number` (Number) Default value for integer or float column. At most one of `default_string`, `default_bool` or `default_number` should be set.
 - `default_string` (String) Default value for string column. At most one of `default_string`, `default_bool` or `default_number` should be set.
 - `doc` (String) Documentation string for the column.
+- `list_type` (Block, Optional) Iceberg list<T> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set. (see [below for nested schema](#nestedblock--field--list_type))
+- `map_type` (Block, Optional) Iceberg map<K,V> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set. (see [below for nested schema](#nestedblock--field--map_type))
 - `required` (Boolean) Whether the column is non-nullable. Defaults to `false`.
+- `struct_type` (Block, Optional) Iceberg struct<...> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set. (see [below for nested schema](#nestedblock--field--struct_type))
+- `type` (String) Iceberg primitive type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.
+
+<a id="nestedblock--field--list_type"></a>
+### Nested Schema for `field.list_type`
+
+Required:
+
+- `type` (String) Primitive type of list elements.
+
+Optional:
+
+- `id` (Number) Iceberg element field ID. Optional; if any nested type IDs are set across the table, all must be set and globally unique.
+- `required` (Boolean) Whether list elements are non-nullable. Defaults to `true`.
+
+
+<a id="nestedblock--field--map_type"></a>
+### Nested Schema for `field.map_type`
+
+Required:
+
+- `key_type` (String) Primitive type of map keys.
+- `value_type` (String) Primitive type of map values.
+
+Optional:
+
+- `key_id` (Number) Iceberg key field ID. Optional; must be set together with `value_id` if any nested type IDs are set.
+- `required` (Boolean) Whether map values are non-nullable. Defaults to `true`.
+- `value_id` (Number) Iceberg value field ID. Optional; must be set together with `key_id` if any nested type IDs are set.
+
+
+<a id="nestedblock--field--struct_type"></a>
+### Nested Schema for `field.struct_type`
+
+Optional:
+
+- `field` (Block List) A field within the struct. Only primitive types are supported. (see [below for nested schema](#nestedblock--field--struct_type--field))
+
+<a id="nestedblock--field--struct_type--field"></a>
+### Nested Schema for `field.struct_type.field`
+
+Required:
+
+- `name` (String) Sub-field name.
+- `type` (String) Primitive Iceberg type of the sub-field.
+
+Optional:
+
+- `doc` (String) Documentation for the sub-field.
+- `id` (Number) Iceberg field ID for this struct sub-field. Optional; if any nested type IDs are set across the table, all must be set and globally unique.
+- `required` (Boolean) Whether the sub-field is non-nullable. Defaults to `true`.
+
+
 
 
 <a id="nestedblock--partition"></a>

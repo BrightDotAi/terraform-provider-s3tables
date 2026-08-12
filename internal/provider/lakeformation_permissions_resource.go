@@ -66,6 +66,33 @@ func isSuperUserGrantErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Grant options not allowed for SUPER_USER grant")
 }
 
+// accountFromPrincipal extracts the AWS account ID from a principal value.
+// The principal may be an IAM ARN (arn:aws:iam::ACCOUNT:...) or a bare 12-digit account ID.
+// Returns an empty string when the account cannot be determined.
+func accountFromPrincipal(principal string) string {
+	if strings.HasPrefix(principal, "arn:") {
+		parts := strings.SplitN(principal, ":", 6)
+		if len(parts) >= 5 {
+			return parts[4]
+		}
+		return ""
+	}
+	// Bare account ID: exactly 12 digits.
+	if len(principal) == 12 {
+		allDigits := true
+		for _, c := range principal {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return principal
+		}
+	}
+	return ""
+}
+
 // lfClientIface is the subset of the LF client API used by this resource.
 // *lakeformation.Client satisfies it; tests substitute a mock.
 type lfClientIface interface {
@@ -355,6 +382,29 @@ func (v *lfPermissionsValidator) ValidateResource(ctx context.Context, req resou
 	resp.Diagnostics.Append(catalogObj.As(ctx, &catalog, basetypes.ObjectAsOptions{UnhandledNullAsEmpty: true})...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// Cross-account check: AWS does not allow catalog-level LakeFormation permissions
+	// to be granted to principals from external accounts. Only database and table
+	// permissions can be shared cross-account.
+	if catalog.Permissions != nil || catalog.GrantablePermissions != nil {
+		var principalAttr types.String
+		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("principal"), &principalAttr)...)
+		if !resp.Diagnostics.HasError() && !principalAttr.IsNull() && !principalAttr.IsUnknown() {
+			principalAccount := accountFromPrincipal(principalAttr.ValueString())
+			catalogAccount := catalog.ID.ValueString()
+			if principalAccount != "" && catalogAccount != "" && principalAccount != catalogAccount {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("catalog").AtName("permissions"),
+					"Cross-account catalog permissions not supported",
+					fmt.Sprintf(
+						"AWS Lake Formation does not allow catalog-level permissions to be granted to principals from external accounts (principal account %q, catalog account %q). "+
+							"Remove the catalog.permissions and catalog.grantable_permissions blocks, or grant only database- and table-level permissions cross-account.",
+						principalAccount, catalogAccount,
+					),
+				)
+			}
+		}
 	}
 
 	catPath := path.Root("catalog")
