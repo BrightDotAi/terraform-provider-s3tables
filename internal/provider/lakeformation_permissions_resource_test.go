@@ -2527,6 +2527,70 @@ func TestValidateResource(t *testing.T) {
 			t.Errorf("unexpected error when wildcard has only grantable_permissions set: %v", diags)
 		}
 	})
+
+	t.Run("cross_account_catalog_permissions_rejected", func(t *testing.T) {
+		diags := validate(&LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue("arn:aws:iam::999999999999:role/ExternalRole"),
+			Catalog: &CatalogPermModel{
+				ID:          types.StringValue(catalogID), // 123456789012 ≠ 999999999999
+				Permissions: &Permissions{CreateDatabase: types.BoolValue(true)},
+			},
+		})
+		if !diags.HasError() {
+			t.Error("expected error for cross-account catalog-level permissions")
+		}
+	})
+
+	t.Run("cross_account_no_catalog_permissions_allowed", func(t *testing.T) {
+		// Cross-account is fine when only database-level permissions are requested.
+		diags := validate(&LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue("arn:aws:iam::999999999999:role/ExternalRole"),
+			Catalog: &CatalogPermModel{
+				ID: types.StringValue(catalogID),
+				Database: []DatabasePermModel{{
+					Name:        types.StringValue("analytics"),
+					Permissions: &Permissions{Describe: types.BoolValue(true)},
+				}},
+			},
+		})
+		if diags.HasError() {
+			t.Errorf("unexpected error for cross-account db-only permissions: %v", diags)
+		}
+	})
+
+	t.Run("same_account_catalog_permissions_allowed", func(t *testing.T) {
+		diags := validate(&LakeFormationPermissionsResourceModel{
+			Principal: types.StringValue(principal), // 123456789012 == catalogID
+			Catalog: &CatalogPermModel{
+				ID:          types.StringValue(catalogID),
+				Permissions: &Permissions{CreateDatabase: types.BoolValue(true)},
+			},
+		})
+		if diags.HasError() {
+			t.Errorf("unexpected error for same-account catalog permissions: %v", diags)
+		}
+	})
+}
+
+func TestAccountFromPrincipal(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"arn:aws:iam::123456789012:role/MyRole", "123456789012"},
+		{"arn:aws:iam::123456789012:user/alice", "123456789012"},
+		{"arn:aws:iam::123456789012:root", "123456789012"},
+		{"123456789012", "123456789012"},
+		{"not-an-arn", ""},
+		{"", ""},
+		{"arn:aws:iam:::role/NoAccount", ""},
+	}
+	for _, tt := range tests {
+		got := accountFromPrincipal(tt.input)
+		if got != tt.want {
+			t.Errorf("accountFromPrincipal(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
 }
 
 // ── checkPerms ───────────────────────────────────────────────────────────────

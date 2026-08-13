@@ -137,6 +137,112 @@ resource "bai_s3tables_table" "metrics" {
   }
 }
 
+#### Example — Table with nested types (list, map, struct)
+
+resource "bai_s3tables_table" "nested" {
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "analytics"
+  name      = "nested_example"
+
+  field {
+    name     = "order_id"
+    type     = "long"
+    required = true
+  }
+
+  # list<string> column — element IDs auto-assigned if omitted
+  field {
+    name = "tags"
+    list_type {
+      type             = "string"
+      required = false
+    }
+  }
+
+  # map<string, long> column
+  field {
+    name = "counts"
+    map_type {
+      key_type       = "string"
+      value_type     = "long"
+      required = false
+    }
+  }
+
+  # struct column with primitive sub-fields
+  field {
+    name = "address"
+    struct_type {
+      field {
+        name     = "street"
+        type     = "string"
+        required = true
+      }
+      field {
+        name = "city"
+        type = "string"
+      }
+      field {
+        name = "zip"
+        type = "string"
+      }
+    }
+  }
+}
+
+#### Example — Nested types with explicit Iceberg field IDs
+
+resource "bai_s3tables_table" "nested_explicit_ids" {
+  warehouse = "123456789012:s3tablescatalog/my-table-bucket"
+  region    = "us-east-1"
+  namespace = "analytics"
+  name      = "nested_explicit_ids"
+
+  field {
+    name     = "order_id"
+    type     = "long"
+    required = true
+    # top-level field gets ID 1 automatically
+  }
+
+  field {
+    name = "tags"
+    list_type {
+      id               = 2 # explicitly reserve ID 2 for the list element
+      type             = "string"
+      required = false
+    }
+  }
+
+  field {
+    name = "counts"
+    map_type {
+      key_id         = 3
+      value_id       = 4
+      key_type       = "string"
+      value_type     = "long"
+      required = false
+    }
+  }
+
+  field {
+    name = "address"
+    struct_type {
+      field {
+        id   = 5
+        name = "street"
+        type = "string"
+      }
+      field {
+        id   = 6
+        name = "city"
+        type = "string"
+      }
+    }
+  }
+}
+
 #### Example — Table with properties
 
 resource "bai_s3tables_table" "events" {

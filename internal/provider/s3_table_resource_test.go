@@ -295,7 +295,7 @@ func TestToNestedField(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nf, err := tt.field.toNestedField(0)
+			nf, err := tt.field.toNestedField(1)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -1195,6 +1195,506 @@ func TestRefreshUntilConsistent(t *testing.T) {
 			func(time.Duration) {})
 		if err == nil || err.Error() != "persistent error" {
 			t.Errorf("expected 'persistent error', got %v", err)
+		}
+	})
+}
+
+// TestBuildSchema_NestedTypes covers list, map, and struct type schema building.
+func TestBuildSchema_NestedTypes(t *testing.T) {
+	t.Run("list_type_auto_id", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("tags"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}},
+		}
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("BuildSchema error: %v", err)
+		}
+		f := s.Fields()[0]
+		lt, ok := f.Type.(*iceberg.ListType)
+		if !ok {
+			t.Fatalf("expected ListType, got %T", f.Type)
+		}
+		if lt.ElementID != 2 { // 1 field, so nested starts at 2
+			t.Errorf("ElementID = %d, want 2", lt.ElementID)
+		}
+		if lt.Element.String() != "string" {
+			t.Errorf("Element = %q, want string", lt.Element.String())
+		}
+	})
+
+	t.Run("map_type_auto_id", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("counts"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				MapType: &MapTypeModel{KeyID: types.Int64Null(), ValueID: types.Int64Null(), KeyType: types.StringValue("string"), ValueType: types.StringValue("long"), Required: types.BoolValue(false)}},
+		}
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("BuildSchema error: %v", err)
+		}
+		f := s.Fields()[0]
+		mt, ok := f.Type.(*iceberg.MapType)
+		if !ok {
+			t.Fatalf("expected MapType, got %T", f.Type)
+		}
+		if mt.KeyID != 2 {
+			t.Errorf("KeyID = %d, want 2", mt.KeyID)
+		}
+		if mt.ValueID != 3 {
+			t.Errorf("ValueID = %d, want 3", mt.ValueID)
+		}
+	})
+
+	t.Run("struct_type_sub_fields", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("address"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				StructType: &StructTypeModel{Fields: []StructSubFieldModel{
+					{ID: types.Int64Null(), Name: types.StringValue("street"), Type: types.StringValue("string"), Required: types.BoolValue(false), Doc: types.StringValue("")},
+					{ID: types.Int64Null(), Name: types.StringValue("zip"), Type: types.StringValue("string"), Required: types.BoolValue(true), Doc: types.StringValue("")},
+				}}},
+		}
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("BuildSchema error: %v", err)
+		}
+		f := s.Fields()[0]
+		st, ok := f.Type.(*iceberg.StructType)
+		if !ok {
+			t.Fatalf("expected StructType, got %T", f.Type)
+		}
+		if len(st.FieldList) != 2 {
+			t.Fatalf("expected 2 sub-fields, got %d", len(st.FieldList))
+		}
+		if st.FieldList[0].ID != 2 {
+			t.Errorf("sub-field 0 ID = %d, want 2", st.FieldList[0].ID)
+		}
+		if st.FieldList[1].ID != 3 {
+			t.Errorf("sub-field 1 ID = %d, want 3", st.FieldList[1].ID)
+		}
+		if st.FieldList[0].Name != "street" {
+			t.Errorf("sub-field 0 name = %q, want street", st.FieldList[0].Name)
+		}
+		if !st.FieldList[1].Required {
+			t.Error("zip should be required")
+		}
+	})
+
+	t.Run("explicit_ids_validated", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("items"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false)}},
+		}
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("BuildSchema error: %v", err)
+		}
+		lt := s.Fields()[0].Type.(*iceberg.ListType)
+		if lt.ElementID != 10 {
+			t.Errorf("ElementID = %d, want 10", lt.ElementID)
+		}
+	})
+
+	t.Run("duplicate_ids_rejected", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("items"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Value(1), ElementType: types.StringValue("int"), Required: types.BoolValue(false)}},
+		}
+		_, err := BuildSchema(fields)
+		if err == nil {
+			t.Fatal("expected error for duplicate ID 1 (same as top-level field), got nil")
+		}
+	})
+
+	t.Run("partial_ids_rejected", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("a"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false)}},
+			{Name: types.StringValue("b"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}},
+		}
+		_, err := BuildSchema(fields)
+		if err == nil {
+			t.Fatal("expected error for partial ID specification, got nil")
+		}
+	})
+
+	t.Run("mixed_primitive_and_nested", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("id"), Required: types.BoolValue(true), Doc: types.StringValue(""),
+				Type: types.StringValue("long"), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()},
+			{Name: types.StringValue("tags"), Required: types.BoolValue(false), Doc: types.StringValue(""),
+				Type: types.StringNull(), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: &ListTypeModel{ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}},
+		}
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("BuildSchema error: %v", err)
+		}
+		if len(s.Fields()) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(s.Fields()))
+		}
+		if s.Fields()[0].Type.String() != "long" {
+			t.Errorf("field 0 type = %q, want long", s.Fields()[0].Type.String())
+		}
+		lt, ok := s.Fields()[1].Type.(*iceberg.ListType)
+		if !ok {
+			t.Fatalf("field 1 should be list type")
+		}
+		if lt.ElementID != 3 {
+			t.Errorf("ElementID = %d, want 3 (after 2 top-level fields)", lt.ElementID)
+		}
+	})
+}
+
+func TestIcebergToFieldModel_NestedTypes(t *testing.T) {
+	t.Run("list_type", func(t *testing.T) {
+		nf := &iceberg.NestedField{
+			ID:   1,
+			Name: "tags",
+			Type: &iceberg.ListType{ElementID: 5, Element: iceberg.PrimitiveTypes.String, ElementRequired: false},
+		}
+		m, err := icebergToFieldModel(nf)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if !m.Type.IsNull() {
+			t.Error("Type should be null for list field")
+		}
+		if m.ListType == nil {
+			t.Fatal("ListType should be set")
+		}
+		if m.ListType.ID.ValueInt64() != 5 {
+			t.Errorf("ElementID = %d, want 5", m.ListType.ID.ValueInt64())
+		}
+		if m.ListType.ElementType.ValueString() != "string" {
+			t.Errorf("ElementType = %q, want string", m.ListType.ElementType.ValueString())
+		}
+	})
+
+	t.Run("map_type", func(t *testing.T) {
+		nf := &iceberg.NestedField{
+			ID:   1,
+			Name: "counts",
+			Type: &iceberg.MapType{KeyID: 2, KeyType: iceberg.PrimitiveTypes.String, ValueID: 3, ValueType: iceberg.PrimitiveTypes.Int64, ValueRequired: false},
+		}
+		m, err := icebergToFieldModel(nf)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if m.MapType == nil {
+			t.Fatal("MapType should be set")
+		}
+		if m.MapType.KeyID.ValueInt64() != 2 {
+			t.Errorf("KeyID = %d, want 2", m.MapType.KeyID.ValueInt64())
+		}
+		if m.MapType.ValueID.ValueInt64() != 3 {
+			t.Errorf("ValueID = %d, want 3", m.MapType.ValueID.ValueInt64())
+		}
+		if m.MapType.KeyType.ValueString() != "string" {
+			t.Errorf("KeyType = %q, want string", m.MapType.KeyType.ValueString())
+		}
+		if m.MapType.ValueType.ValueString() != "long" {
+			t.Errorf("ValueType = %q, want long", m.MapType.ValueType.ValueString())
+		}
+	})
+
+	t.Run("struct_type", func(t *testing.T) {
+		nf := &iceberg.NestedField{
+			ID:   1,
+			Name: "address",
+			Type: &iceberg.StructType{FieldList: []iceberg.NestedField{
+				{ID: 2, Name: "street", Type: iceberg.PrimitiveTypes.String, Required: false},
+				{ID: 3, Name: "zip", Type: iceberg.PrimitiveTypes.String, Required: true},
+			}},
+		}
+		m, err := icebergToFieldModel(nf)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if m.StructType == nil {
+			t.Fatal("StructType should be set")
+		}
+		if len(m.StructType.Fields) != 2 {
+			t.Fatalf("expected 2 sub-fields, got %d", len(m.StructType.Fields))
+		}
+		if m.StructType.Fields[0].Name.ValueString() != "street" {
+			t.Error("expected street")
+		}
+		if !m.StructType.Fields[1].Required.ValueBool() {
+			t.Error("zip should be required")
+		}
+		if m.StructType.Fields[0].ID.ValueInt64() != 2 {
+			t.Errorf("sub-field 0 ID = %d, want 2", m.StructType.Fields[0].ID.ValueInt64())
+		}
+		if m.StructType.Fields[1].ID.ValueInt64() != 3 {
+			t.Errorf("sub-field 1 ID = %d, want 3", m.StructType.Fields[1].ID.ValueInt64())
+		}
+	})
+}
+
+func TestResolveNestedIDs(t *testing.T) {
+	makeList := func(id types.Int64) *ListTypeModel {
+		return &ListTypeModel{ID: id, ElementType: types.StringValue("string"), Required: types.BoolValue(false)}
+	}
+	makeMap := func(kid, vid types.Int64) *MapTypeModel {
+		return &MapTypeModel{KeyID: kid, ValueID: vid, KeyType: types.StringValue("string"), ValueType: types.StringValue("long"), Required: types.BoolValue(false)}
+	}
+
+	t.Run("no_nested_types_unchanged", func(t *testing.T) {
+		fields := []FieldModel{{Name: types.StringValue("x"), Type: types.StringValue("int"), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()}}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 field")
+		}
+	})
+
+	t.Run("list_auto_assign", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("x"), Type: types.StringValue("int"), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()},
+			{Name: types.StringValue("tags"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), ListType: makeList(types.Int64Null())},
+		}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got[1].ListType.ID.ValueInt64() != 3 {
+			t.Errorf("ElementID = %d, want 3 (after 2 top-level fields)", got[1].ListType.ID.ValueInt64())
+		}
+	})
+
+	t.Run("map_auto_assign", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("counts"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), MapType: makeMap(types.Int64Null(), types.Int64Null())},
+		}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got[0].MapType.KeyID.ValueInt64() != 2 {
+			t.Errorf("KeyID = %d, want 2", got[0].MapType.KeyID.ValueInt64())
+		}
+		if got[0].MapType.ValueID.ValueInt64() != 3 {
+			t.Errorf("ValueID = %d, want 3", got[0].MapType.ValueID.ValueInt64())
+		}
+	})
+
+	t.Run("explicit_ids_pass_through", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("tags"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), ListType: makeList(types.Int64Value(10))},
+		}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got[0].ListType.ID.ValueInt64() != 10 {
+			t.Errorf("ID = %d, want 10", got[0].ListType.ID.ValueInt64())
+		}
+	})
+
+	t.Run("partial_ids_error", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("a"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), ListType: makeList(types.Int64Value(10))},
+			{Name: types.StringValue("b"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), ListType: makeList(types.Int64Null())},
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for partial ID specification")
+		}
+	})
+
+	t.Run("duplicate_ids_error", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("items"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: makeList(types.Int64Value(1))}, // ID 1 collides with top-level field 1
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for duplicate ID")
+		}
+	})
+
+	t.Run("map_key_value_same_id_error", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("counts"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				MapType: makeMap(types.Int64Value(5), types.Int64Value(5))},
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for key_id == value_id")
+		}
+	})
+
+	t.Run("map_key_without_value_error", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("counts"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				MapType: makeMap(types.Int64Value(5), types.Int64Null())},
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for key_id set without value_id")
+		}
+	})
+
+	makeStruct := func(subFieldIDs ...types.Int64) *StructTypeModel {
+		sfs := make([]StructSubFieldModel, len(subFieldIDs))
+		names := []string{"a", "b", "c", "d"}
+		for i, id := range subFieldIDs {
+			sfs[i] = StructSubFieldModel{ID: id, Name: types.StringValue(names[i]), Type: types.StringValue("string"), Required: types.BoolValue(false), Doc: types.StringValue("")}
+		}
+		return &StructTypeModel{Fields: sfs}
+	}
+
+	t.Run("struct_auto_assign", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("addr"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				StructType: makeStruct(types.Int64Null(), types.Int64Null())},
+		}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got[0].StructType.Fields[0].ID.ValueInt64() != 2 {
+			t.Errorf("sub-field 0 ID = %d, want 2", got[0].StructType.Fields[0].ID.ValueInt64())
+		}
+		if got[0].StructType.Fields[1].ID.ValueInt64() != 3 {
+			t.Errorf("sub-field 1 ID = %d, want 3", got[0].StructType.Fields[1].ID.ValueInt64())
+		}
+	})
+
+	t.Run("struct_explicit_ids_pass_through", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("addr"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				StructType: makeStruct(types.Int64Value(10), types.Int64Value(11))},
+		}
+		got, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got[0].StructType.Fields[0].ID.ValueInt64() != 10 {
+			t.Errorf("sub-field 0 ID = %d, want 10", got[0].StructType.Fields[0].ID.ValueInt64())
+		}
+		if got[0].StructType.Fields[1].ID.ValueInt64() != 11 {
+			t.Errorf("sub-field 1 ID = %d, want 11", got[0].StructType.Fields[1].ID.ValueInt64())
+		}
+	})
+
+	t.Run("struct_partial_ids_rejected", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("addr"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				StructType: makeStruct(types.Int64Value(10), types.Int64Null())},
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for partial struct sub-field IDs")
+		}
+	})
+
+	t.Run("struct_duplicate_id_rejected", func(t *testing.T) {
+		fields := []FieldModel{
+			{Name: types.StringValue("addr"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				StructType: makeStruct(types.Int64Value(1), types.Int64Value(2))}, // 1 collides with top-level field ID
+		}
+		_, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected error for struct sub-field ID colliding with top-level field ID")
+		}
+	})
+}
+
+func TestFieldModelsEqual(t *testing.T) {
+	makeField := func(name, typ string) FieldModel {
+		return FieldModel{
+			Name: types.StringValue(name), Type: types.StringValue(typ),
+			Required: types.BoolValue(false), Doc: types.StringValue(""),
+			DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+		}
+	}
+
+	t.Run("identical_primitive_fields_equal", func(t *testing.T) {
+		a := makeField("x", "int")
+		b := makeField("x", "int")
+		if !fieldModelsEqual(a, b) {
+			t.Error("expected equal")
+		}
+	})
+
+	t.Run("different_type_not_equal", func(t *testing.T) {
+		a := makeField("x", "int")
+		b := makeField("x", "long")
+		if fieldModelsEqual(a, b) {
+			t.Error("expected not equal")
+		}
+	})
+
+	t.Run("nil_vs_non_nil_list_type_not_equal", func(t *testing.T) {
+		a := FieldModel{Name: types.StringValue("x"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()}
+		b := a
+		b.ListType = &ListTypeModel{ID: types.Int64Value(2), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}
+		if fieldModelsEqual(a, b) {
+			t.Error("expected not equal")
+		}
+	})
+
+	t.Run("same_list_type_equal", func(t *testing.T) {
+		lt := &ListTypeModel{ID: types.Int64Value(2), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}
+		a := FieldModel{Name: types.StringValue("tags"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), ListType: lt}
+		b := FieldModel{Name: types.StringValue("tags"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+			ListType: &ListTypeModel{ID: types.Int64Value(2), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}}
+		if !fieldModelsEqual(a, b) {
+			t.Error("expected equal")
+		}
+	})
+}
+
+func TestNestedTypeUpdateErrMsg(t *testing.T) {
+	stateFields := []FieldModel{
+		{Name: types.StringValue("asset_id"), Type: types.StringValue("string"), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()},
+		{Name: types.StringValue("tags"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+			ListType: &ListTypeModel{ID: types.Int64Value(11), ElementType: types.StringValue("string"), Required: types.BoolValue(false)}},
+		{Name: types.StringValue("counts"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+			MapType: &MapTypeModel{KeyID: types.Int64Value(12), ValueID: types.Int64Value(13), KeyType: types.StringValue("string"), ValueType: types.StringValue("long"), Required: types.BoolValue(false)}},
+		{Name: types.StringValue("addr"), Type: types.StringNull(), Required: types.BoolValue(false), Doc: types.StringValue(""), DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+			StructType: &StructTypeModel{Fields: []StructSubFieldModel{
+				{ID: types.Int64Value(14), Name: types.StringValue("street"), Type: types.StringValue("string"), Required: types.BoolValue(false), Doc: types.StringValue("")},
+			}}},
+	}
+
+	origErr := fmt.Errorf("cannot update field type for non-primitive type: tags")
+	msg := nestedTypeUpdateErrMsg(origErr, stateFields)
+
+	t.Run("contains_original_error", func(t *testing.T) {
+		if !strings.Contains(msg, "cannot update field type for non-primitive type") {
+			t.Error("message should contain original error")
+		}
+	})
+	t.Run("list_id_shown", func(t *testing.T) {
+		if !strings.Contains(msg, "id       = 11") {
+			t.Errorf("expected list element ID 11 in message, got:\n%s", msg)
+		}
+	})
+	t.Run("map_ids_shown", func(t *testing.T) {
+		if !strings.Contains(msg, "key_id         = 12") || !strings.Contains(msg, "value_id       = 13") {
+			t.Errorf("expected map key/value IDs in message, got:\n%s", msg)
+		}
+	})
+	t.Run("struct_sub_field_id_shown", func(t *testing.T) {
+		if !strings.Contains(msg, "id       = 14") {
+			t.Errorf("expected struct sub-field ID 14 in message, got:\n%s", msg)
+		}
+	})
+	t.Run("primitive_field_in_comment", func(t *testing.T) {
+		if !strings.Contains(msg, "asset_id") {
+			t.Errorf("expected primitive field name in message, got:\n%s", msg)
 		}
 	})
 }
