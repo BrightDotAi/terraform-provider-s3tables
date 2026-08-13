@@ -59,6 +59,13 @@ var prop_defaults = map[string]string{
 	"write.parquet.compression-codec": "zstd",
 }
 
+// systemManagedProps is the set of Iceberg table property keys written automatically
+// by query engines (Athena, Spark, etc.) as a side effect of DML operations.
+// They are never stored in Terraform state so they never cause drift.
+var systemManagedProps = map[string]struct{}{
+	"schema.name-mapping.default": {},
+}
+
 // S3TableResource defines the resource implementation.
 type S3TableResource struct {
 	awsCfg aws.Config
@@ -66,14 +73,15 @@ type S3TableResource struct {
 
 // S3TableResourceModel describes the resource data model.
 type S3TableResourceModel struct {
-	Warehouse     types.String     `tfsdk:"warehouse"`
-	Region        types.String     `tfsdk:"region"`
-	Namespace     types.String     `tfsdk:"namespace"`
-	Name          types.String     `tfsdk:"name"`
-	FormatVersion types.String     `tfsdk:"format_version"`
-	Fields        []FieldModel     `tfsdk:"field"`
-	Partitions    []PartitionModel `tfsdk:"partition"`
-	Properties    []PropertyModel  `tfsdk:"property"`
+	Warehouse        types.String     `tfsdk:"warehouse"`
+	Region           types.String     `tfsdk:"region"`
+	Namespace        types.String     `tfsdk:"namespace"`
+	Name             types.String     `tfsdk:"name"`
+	FormatVersion    types.String     `tfsdk:"format_version"`
+	Fields           []FieldModel     `tfsdk:"field"`
+	Partitions       []PartitionModel `tfsdk:"partition"`
+	Properties       []PropertyModel  `tfsdk:"property"`
+	IgnoreProperties types.List       `tfsdk:"ignore_properties"`
 }
 
 // FieldModel represents one column in the Iceberg schema.
@@ -180,6 +188,11 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("2"),
+			},
+			"ignore_properties": schema.ListAttribute{
+				MarkdownDescription: "Additional table property names to ignore when checking for drift. Applied on top of built-in system-managed properties (e.g. `schema.name-mapping.default`). Useful for properties written by query engines that are not in the built-in ignore list.",
+				Optional:            true,
+				ElementType:         types.StringType,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -640,6 +653,7 @@ func refreshUntilConsistent(
 			continue
 		}
 		var model S3TableResourceModel
+		model.IgnoreProperties = plan.IgnoreProperties
 		if err := setModelFromTable(&model, tbl); err != nil {
 			lastErr = err
 			continue
@@ -1281,7 +1295,7 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 	}
 	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
 
-	data.Properties = propertiesToPropertyModels(tbl.Properties())
+	data.Properties = propertiesToPropertyModels(tbl.Properties(), ignorePropsSet(data.IgnoreProperties))
 	return nil
 }
 
@@ -1464,8 +1478,25 @@ func specToPartitionModels(spec iceberg.PartitionSpec, schema *iceberg.Schema) [
 	return models
 }
 
-// propertiesToPropertyModels
-func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
+// ignorePropsSet converts a types.List of property names into a lookup set.
+// Returns nil (safe for lookup) when the list is null or unknown.
+func ignorePropsSet(ignore types.List) map[string]struct{} {
+	if ignore.IsNull() || ignore.IsUnknown() {
+		return nil
+	}
+	result := make(map[string]struct{}, len(ignore.Elements()))
+	for _, v := range ignore.Elements() {
+		if s, ok := v.(types.String); ok && !s.IsNull() && !s.IsUnknown() {
+			result[s.ValueString()] = struct{}{}
+		}
+	}
+	return result
+}
+
+// propertiesToPropertyModels converts Iceberg table properties to Terraform models,
+// filtering out format-version, built-in prop_defaults, systemManagedProps, and any
+// keys in extraIgnore (from the resource's ignore_properties field).
+func propertiesToPropertyModels(props iceberg.Properties, extraIgnore map[string]struct{}) []PropertyModel {
 	models := make([]PropertyModel, 0)
 
 	prop_names := make([]string, 0)
@@ -1476,6 +1507,12 @@ func propertiesToPropertyModels(props iceberg.Properties) []PropertyModel {
 
 	for _, name := range prop_names {
 		if name == "format-version" {
+			continue
+		}
+		if _, ignored := systemManagedProps[name]; ignored {
+			continue
+		}
+		if _, ignored := extraIgnore[name]; ignored {
 			continue
 		}
 		if dv, exists := prop_defaults[name]; !exists || props[name] != dv {
@@ -1665,37 +1702,62 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 	return updater.Commit()
 }
 
-// checkPropChanges - returns error if properties are different
-// Note: table property updates not supported in icebert-go package
+// checkPropChanges returns an error when the plan properties differ from state.
+// Table property updates are not supported by the Iceberg catalog; on mismatch the
+// error message includes the actual state properties as copy-pasteable HCL blocks.
 func checkPropChanges(stateProps, planProps []PropertyModel) error {
 	current := make(map[string]PropertyModel)
 	for _, p := range stateProps {
 		current[p.Name.ValueString()] = p
 	}
-
 	plan := make(map[string]PropertyModel)
 	for _, p := range planProps {
 		plan[p.Name.ValueString()] = p
 	}
 
-	if len(current) != len(plan) {
-		return fmt.Errorf("differing properties count: %d vs %d", len(current), len(plan))
-	}
-	for name, pp := range plan {
-		sp, exists := current[name]
-		if !exists {
-			return fmt.Errorf("differing property: %v", name)
-		}
-		if err := checkPropValueEqual(name, sp.Value.ValueString(), pp.Value.ValueString(), pp.Type.ValueString()); err != nil {
-			return err
-		}
-	}
-	for name := range current {
-		if _, exists := plan[name]; !exists {
-			return fmt.Errorf("missing property: %v", name)
+	mismatch := len(current) != len(plan)
+	if !mismatch {
+		for name, pp := range plan {
+			sp, exists := current[name]
+			if !exists {
+				mismatch = true
+				break
+			}
+			if err := checkPropValueEqual(name, sp.Value.ValueString(), pp.Value.ValueString(), pp.Type.ValueString()); err != nil {
+				mismatch = true
+				break
+			}
 		}
 	}
-	return nil
+	if !mismatch {
+		for name := range current {
+			if _, exists := plan[name]; !exists {
+				mismatch = true
+				break
+			}
+		}
+	}
+	if !mismatch {
+		return nil
+	}
+	return propertyMismatchErr(stateProps)
+}
+
+// propertyMismatchErr builds a human-friendly error for property mismatches that
+// includes the current table properties as copy-pasteable HCL so the user can
+// reconcile their configuration.
+func propertyMismatchErr(stateProps []PropertyModel) error {
+	var sb strings.Builder
+	sb.WriteString("Table property changes are not supported.\n\n")
+	if len(stateProps) == 0 {
+		sb.WriteString("The table has no user-defined properties. Remove all property blocks from your configuration.")
+		return fmt.Errorf("%s", sb.String())
+	}
+	sb.WriteString("Update your configuration to match the table's actual properties:\n\n")
+	for _, p := range stateProps {
+		fmt.Fprintf(&sb, "  property {\n    name  = %q\n    value = %q\n  }\n", p.Name.ValueString(), p.Value.ValueString())
+	}
+	return fmt.Errorf("%s", sb.String())
 }
 
 // checkPropValueEqual compares a state and plan property value.

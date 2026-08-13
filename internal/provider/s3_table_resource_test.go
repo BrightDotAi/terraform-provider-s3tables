@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	fwpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -408,7 +409,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 			"table_type":        "iceberg",
 			"write_compression": "zstd",
 		}
-		models := propertiesToPropertyModels(props)
+		models := propertiesToPropertyModels(props, nil)
 		if len(models) != 0 {
 			t.Errorf("expected default-only properties to produce 0 models, got %d: %v", len(models), models)
 		}
@@ -420,7 +421,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 			"write_compression":                "zstd",
 			"write.metadata.compression-codec": "gzip",
 		}
-		models := propertiesToPropertyModels(props)
+		models := propertiesToPropertyModels(props, nil)
 		if len(models) != 1 {
 			t.Fatalf("expected 1 model (non-default prop), got %d", len(models))
 		}
@@ -437,12 +438,63 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 			"table_type":        "iceberg",
 			"write_compression": "snappy",
 		}
-		models := propertiesToPropertyModels(props)
+		models := propertiesToPropertyModels(props, nil)
 		if len(models) != 1 {
 			t.Fatalf("expected 1 model (overridden default), got %d", len(models))
 		}
 		if models[0].Name.ValueString() != "write_compression" || models[0].Value.ValueString() != "snappy" {
 			t.Errorf("unexpected model: %+v", models[0])
+		}
+	})
+
+	t.Run("system_managed_props_filtered_out", func(t *testing.T) {
+		props := iceberg.Properties{
+			"schema.name-mapping.default":      `[{"field-id":1,"names":["col"]}]`,
+			"write.metadata.compression-codec": "gzip",
+		}
+		models := propertiesToPropertyModels(props, nil)
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model (non-system prop), got %d: %v", len(models), models)
+		}
+		if models[0].Name.ValueString() != "write.metadata.compression-codec" {
+			t.Errorf("unexpected model name: %q", models[0].Name.ValueString())
+		}
+	})
+
+	t.Run("system_managed_only_produces_no_models", func(t *testing.T) {
+		props := iceberg.Properties{
+			"schema.name-mapping.default": `[{"field-id":1,"names":["col"]}]`,
+		}
+		models := propertiesToPropertyModels(props, nil)
+		if len(models) != 0 {
+			t.Errorf("expected 0 models for system-managed-only props, got %d", len(models))
+		}
+	})
+
+	t.Run("ignore_properties_filters_named_prop", func(t *testing.T) {
+		props := iceberg.Properties{
+			"custom.engine.stats": "100",
+			"write.metadata.compression-codec": "gzip",
+		}
+		ignore := ignorePropsSet(types.ListValueMust(types.StringType, []attr.Value{
+			types.StringValue("custom.engine.stats"),
+		}))
+		models := propertiesToPropertyModels(props, ignore)
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model after ignore, got %d: %v", len(models), models)
+		}
+		if models[0].Name.ValueString() != "write.metadata.compression-codec" {
+			t.Errorf("unexpected model: %+v", models[0])
+		}
+	})
+
+	t.Run("ignore_properties_null_list_no_filter", func(t *testing.T) {
+		props := iceberg.Properties{
+			"write.metadata.compression-codec": "gzip",
+		}
+		models := propertiesToPropertyModels(props, ignorePropsSet(types.ListNull(types.StringType)))
+		if len(models) != 1 {
+			t.Errorf("expected 1 model with null ignore list, got %d", len(models))
 		}
 	})
 }
@@ -745,6 +797,50 @@ func TestCheckPropChanges(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPropertyMismatchErr(t *testing.T) {
+	pm := func(name, value string) PropertyModel {
+		return PropertyModel{Name: types.StringValue(name), Value: types.StringValue(value), Type: types.StringValue("text")}
+	}
+
+	t.Run("no_state_props_tells_user_to_remove_blocks", func(t *testing.T) {
+		err := propertyMismatchErr(nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "Remove all property blocks") {
+			t.Errorf("error missing removal hint: %v", err)
+		}
+	})
+
+	t.Run("state_props_shown_as_hcl", func(t *testing.T) {
+		err := propertyMismatchErr([]PropertyModel{pm("write.metadata.compression-codec", "gzip")})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, `name  = "write.metadata.compression-codec"`) {
+			t.Errorf("error missing property name: %v", msg)
+		}
+		if !strings.Contains(msg, `value = "gzip"`) {
+			t.Errorf("error missing property value: %v", msg)
+		}
+		if !strings.Contains(msg, "property {") {
+			t.Errorf("error missing HCL block: %v", msg)
+		}
+	})
+
+	t.Run("checkPropChanges_state_has_extra_shows_hcl", func(t *testing.T) {
+		state := []PropertyModel{pm("k", "v")}
+		err := checkPropChanges(state, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), `name  = "k"`) {
+			t.Errorf("error missing HCL: %v", err)
+		}
+	})
 }
 
 func TestCheckPropValueEqual(t *testing.T) {

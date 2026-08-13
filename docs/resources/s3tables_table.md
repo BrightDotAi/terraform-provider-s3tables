@@ -26,6 +26,7 @@ Manages an S3 Tables Iceberg table via the AWS Glue catalog.
 
 - `field` (Block List) Iceberg schema column. (see [below for nested schema](#nestedblock--field))
 - `format_version` (String) Iceberg format version. Accepted values: `2` (default) or `3`. Version 3 is required to use column default values.
+- `ignore_properties` (List of String) Additional table property names to ignore when checking for drift. Applied on top of built-in system-managed properties (e.g. `schema.name-mapping.default`). Useful for properties written by query engines that are not in the built-in ignore list.
 - `partition` (Block List) Iceberg partition field. (see [below for nested schema](#nestedblock--partition))
 - `property` (Block List) Iceberg properties field. (see [below for nested schema](#nestedblock--property))
 
