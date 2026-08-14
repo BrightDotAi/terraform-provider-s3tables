@@ -732,7 +732,7 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 // ModifyPlan auto-assigns nested type IDs (list ElementID, map KeyID/ValueID) when
 // none are set by the user, ensuring the plan stored to state has canonical IDs.
 func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsKnown() {
 		return
 	}
 	var plan S3TableResourceModel
@@ -1702,18 +1702,22 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 	return updater.Commit()
 }
 
-// filterIgnoredProps removes entries whose name is in extraIgnore from a property slice.
-// systemManagedProps are already excluded by propertiesToPropertyModels so are not
-// rechecked here; only the user-supplied ignore_properties set needs filtering.
+// filterIgnoredProps removes entries whose name is in systemManagedProps or extraIgnore
+// from a property slice. Filtering systemManagedProps here (in addition to
+// propertiesToPropertyModels) ensures that if a user has explicitly declared a
+// system-managed key in a property block, the plan-side copy is also dropped so
+// checkPropChanges does not treat the state/plan asymmetry as a real change.
 func filterIgnoredProps(props []PropertyModel, extraIgnore map[string]struct{}) []PropertyModel {
-	if len(extraIgnore) == 0 {
-		return props
-	}
 	result := make([]PropertyModel, 0, len(props))
 	for _, p := range props {
-		if _, ignored := extraIgnore[p.Name.ValueString()]; !ignored {
-			result = append(result, p)
+		name := p.Name.ValueString()
+		if _, ignored := systemManagedProps[name]; ignored {
+			continue
 		}
+		if _, ignored := extraIgnore[name]; ignored {
+			continue
+		}
+		result = append(result, p)
 	}
 	return result
 }

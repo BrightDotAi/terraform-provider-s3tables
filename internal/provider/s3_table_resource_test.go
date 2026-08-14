@@ -865,6 +865,17 @@ func TestPropertyMismatchErr(t *testing.T) {
 			t.Errorf("expected no error, got: %v", err)
 		}
 	})
+
+	t.Run("checkPropChanges_system_managed_in_plan_only_no_error", func(t *testing.T) {
+		// User declared a systemManagedProp in their property block. Read strips it from
+		// state; plan still has it. filterIgnoredProps must drop it from plan too.
+		state := []PropertyModel{pm("user.prop", "v")}
+		plan := []PropertyModel{pm("user.prop", "v"), pm("schema.name-mapping.default", `[{"field-id":1}]`)}
+		err := checkPropChanges(state, plan, nil)
+		if err != nil {
+			t.Errorf("expected no error when system-managed prop in plan only, got: %v", err)
+		}
+	})
 }
 
 func TestCheckPropValueEqual(t *testing.T) {
