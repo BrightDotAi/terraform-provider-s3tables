@@ -732,7 +732,7 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 // ModifyPlan auto-assigns nested type IDs (list ElementID, map KeyID/ValueID) when
 // none are set by the user, ensuring the plan stored to state has canonical IDs.
 func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() {
+	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsKnown() {
 		return
 	}
 	var plan S3TableResourceModel
