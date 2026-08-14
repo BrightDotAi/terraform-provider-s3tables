@@ -549,7 +549,7 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	err = checkPropChanges(state.Properties, plan.Properties)
+	err = checkPropChanges(state.Properties, plan.Properties, ignorePropsSet(plan.IgnoreProperties))
 	if err != nil {
 		resp.Diagnostics.AddError("Error - Table property changes not supported", err.Error())
 		return
@@ -1702,10 +1702,32 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 	return updater.Commit()
 }
 
-// checkPropChanges returns an error when the plan properties differ from state.
+// filterIgnoredProps removes entries whose name is in extraIgnore from a property slice.
+// systemManagedProps are already excluded by propertiesToPropertyModels so are not
+// rechecked here; only the user-supplied ignore_properties set needs filtering.
+func filterIgnoredProps(props []PropertyModel, extraIgnore map[string]struct{}) []PropertyModel {
+	if len(extraIgnore) == 0 {
+		return props
+	}
+	result := make([]PropertyModel, 0, len(props))
+	for _, p := range props {
+		if _, ignored := extraIgnore[p.Name.ValueString()]; !ignored {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// checkPropChanges returns an error when the plan properties differ from state after
+// filtering out entries listed in extraIgnore (the resource's ignore_properties field).
+// Filtering both sides handles the transition case where an ignored property is still
+// present in state from a previous Read that ran before ignore_properties was set.
 // Table property updates are not supported by the Iceberg catalog; on mismatch the
-// error message includes the actual state properties as copy-pasteable HCL blocks.
-func checkPropChanges(stateProps, planProps []PropertyModel) error {
+// error message includes the filtered state properties as copy-pasteable HCL blocks.
+func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[string]struct{}) error {
+	stateProps = filterIgnoredProps(stateProps, extraIgnore)
+	planProps = filterIgnoredProps(planProps, extraIgnore)
+
 	current := make(map[string]PropertyModel)
 	for _, p := range stateProps {
 		current[p.Name.ValueString()] = p

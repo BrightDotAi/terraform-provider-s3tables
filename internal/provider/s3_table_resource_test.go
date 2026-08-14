@@ -791,7 +791,7 @@ func TestCheckPropChanges(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkPropChanges(tt.state, tt.plan)
+			err := checkPropChanges(tt.state, tt.plan, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("checkPropChanges() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -833,12 +833,36 @@ func TestPropertyMismatchErr(t *testing.T) {
 
 	t.Run("checkPropChanges_state_has_extra_shows_hcl", func(t *testing.T) {
 		state := []PropertyModel{pm("k", "v")}
-		err := checkPropChanges(state, nil)
+		err := checkPropChanges(state, nil, nil)
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
 		if !strings.Contains(err.Error(), `name  = "k"`) {
 			t.Errorf("error missing HCL: %v", err)
+		}
+	})
+
+	t.Run("checkPropChanges_ignored_prop_in_state_no_error", func(t *testing.T) {
+		// Transition case: ignored prop still in state from a previous Read where
+		// ignore_properties was null. Should not error after user adds it to ignore list.
+		state := []PropertyModel{pm("engine.prop", "x"), pm("user.prop", "v")}
+		plan := []PropertyModel{pm("user.prop", "v")}
+		ignore := map[string]struct{}{"engine.prop": {}}
+		err := checkPropChanges(state, plan, ignore)
+		if err != nil {
+			t.Errorf("expected no error when ignored prop is in state but not plan, got: %v", err)
+		}
+	})
+
+	t.Run("checkPropChanges_ignored_prop_in_both_no_error", func(t *testing.T) {
+		// Ignored prop appears in both state and plan (e.g. user put it in a property
+		// block AND ignore_properties). Both sides drop it; no mismatch.
+		state := []PropertyModel{pm("engine.prop", "x")}
+		plan := []PropertyModel{pm("engine.prop", "x")}
+		ignore := map[string]struct{}{"engine.prop": {}}
+		err := checkPropChanges(state, plan, ignore)
+		if err != nil {
+			t.Errorf("expected no error, got: %v", err)
 		}
 	})
 }
@@ -888,7 +912,7 @@ func TestUpdate_PropertyChanges(t *testing.T) {
 		// differently (key order, whitespace). Update must not report a change.
 		state := []PropertyModel{stateText("cfg", `{"b":2,"a":1}`)}
 		plan := []PropertyModel{planJSON("cfg", `{"a": 1, "b": 2}`)}
-		if err := checkPropChanges(state, plan); err != nil {
+		if err := checkPropChanges(state, plan, nil); err != nil {
 			t.Errorf("expected no error for semantically equal JSON, got: %v", err)
 		}
 	})
@@ -898,7 +922,7 @@ func TestUpdate_PropertyChanges(t *testing.T) {
 		// an error (property changes are not supported).
 		state := []PropertyModel{stateText("cfg", `{"a":1}`)}
 		plan := []PropertyModel{planJSON("cfg", `{"a":2}`)}
-		if err := checkPropChanges(state, plan); err == nil {
+		if err := checkPropChanges(state, plan, nil); err == nil {
 			t.Error("expected error for semantically different JSON, got nil")
 		}
 	})
