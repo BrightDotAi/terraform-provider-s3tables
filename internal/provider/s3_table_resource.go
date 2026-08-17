@@ -732,7 +732,7 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 // ModifyPlan auto-assigns nested type IDs (list ElementID, map KeyID/ValueID) when
 // none are set by the user, ensuring the plan stored to state has canonical IDs.
 func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsKnown() {
+	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsFullyKnown() {
 		return
 	}
 	var plan S3TableResourceModel
@@ -1787,10 +1787,10 @@ func propertyMismatchErr(stateProps []PropertyModel) error {
 }
 
 // checkPropValueEqual compares a state and plan property value.
-// When planType is "json", both values are decoded and compared structurally
-// so that equivalent JSON with different whitespace/key ordering is not
-// treated as a change. State type is always "text" so the type field itself
-// is not compared.
+// When planType is "json", strict JSON mode applies: both values must be valid
+// JSON and are compared structurally (key order and whitespace ignored).
+// For all other types, structural JSON comparison is attempted automatically;
+// if either value is not valid JSON the comparison falls back to string equality.
 func checkPropValueEqual(name, stateVal, planVal, planType string) error {
 	if planType == "json" {
 		var stateDecoded, planDecoded any
@@ -1800,6 +1800,17 @@ func checkPropValueEqual(name, stateVal, planVal, planType string) error {
 		if err := json.Unmarshal([]byte(planVal), &planDecoded); err != nil {
 			return fmt.Errorf("property %q: plan value is not valid JSON: %w", name, err)
 		}
+		if !reflect.DeepEqual(stateDecoded, planDecoded) {
+			return fmt.Errorf("differing property: %v", name)
+		}
+		return nil
+	}
+	// Auto-detect JSON: if both values parse as JSON, compare structurally so that
+	// whitespace/key-order differences (e.g. schema.name-mapping.default written by
+	// Athena) are not treated as changes.
+	var stateDecoded, planDecoded any
+	if json.Unmarshal([]byte(stateVal), &stateDecoded) == nil &&
+		json.Unmarshal([]byte(planVal), &planDecoded) == nil {
 		if !reflect.DeepEqual(stateDecoded, planDecoded) {
 			return fmt.Errorf("differing property: %v", name)
 		}
