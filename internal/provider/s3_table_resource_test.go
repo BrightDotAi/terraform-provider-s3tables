@@ -895,6 +895,13 @@ func TestCheckPropValueEqual(t *testing.T) {
 		{"json_value_differs", `{"a":1}`, `{"a":2}`, "json", true},
 		{"json_invalid_state", `not-json`, `{"a":1}`, "json", true},
 		{"json_invalid_plan", `{"a":1}`, `not-json`, "json", true},
+		// Auto-detect JSON (type="text"): structural comparison, whitespace/key-order ignored.
+		{"text_auto_json_key_order", `{"b":2,"a":1}`, `{"a":1,"b":2}`, "text", false},
+		{"text_auto_json_whitespace", `{"x":1}`, `{ "x" : 1 }`, "text", false},
+		{"text_auto_json_differs", `{"a":1}`, `{"a":2}`, "text", true},
+		{"text_auto_json_array_equal", `[1,2,3]`, `[1,2,3]`, "text", false},
+		{"text_auto_json_one_invalid_falls_back_to_string", `not-json`, `not-json`, "text", false},
+		{"text_auto_json_one_invalid_differs", `not-json`, `other`, "text", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

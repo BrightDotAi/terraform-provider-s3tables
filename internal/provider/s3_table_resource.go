@@ -735,6 +735,18 @@ func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsKnown() {
 		return
 	}
+	// Skip if any top-level list block is unknown at the list level. This happens
+	// when blocks reference computed values from other resources (dynamic blocks).
+	// We must not use IsFullyKnown() here: individual attrs within a known list
+	// (e.g. nested type IDs as types.Int64) may be unknown but req.Plan.Get still
+	// succeeds because types.Int64 handles unknowns. Only an unknown list itself
+	// cannot be decoded into []FieldModel / []PropertyModel / []PartitionModel.
+	for _, attrName := range []string{"field", "property", "partition"} {
+		var list types.List
+		if diags := req.Plan.GetAttribute(ctx, path.Root(attrName), &list); diags.HasError() || list.IsUnknown() {
+			return
+		}
+	}
 	var plan S3TableResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -1787,10 +1799,10 @@ func propertyMismatchErr(stateProps []PropertyModel) error {
 }
 
 // checkPropValueEqual compares a state and plan property value.
-// When planType is "json", both values are decoded and compared structurally
-// so that equivalent JSON with different whitespace/key ordering is not
-// treated as a change. State type is always "text" so the type field itself
-// is not compared.
+// When planType is "json", strict JSON mode applies: both values must be valid
+// JSON and are compared structurally (key order and whitespace ignored).
+// For all other types, structural JSON comparison is attempted automatically;
+// if either value is not valid JSON the comparison falls back to string equality.
 func checkPropValueEqual(name, stateVal, planVal, planType string) error {
 	if planType == "json" {
 		var stateDecoded, planDecoded any
@@ -1800,6 +1812,17 @@ func checkPropValueEqual(name, stateVal, planVal, planType string) error {
 		if err := json.Unmarshal([]byte(planVal), &planDecoded); err != nil {
 			return fmt.Errorf("property %q: plan value is not valid JSON: %w", name, err)
 		}
+		if !reflect.DeepEqual(stateDecoded, planDecoded) {
+			return fmt.Errorf("differing property: %v", name)
+		}
+		return nil
+	}
+	// Auto-detect JSON: if both values parse as JSON, compare structurally so that
+	// whitespace/key-order differences (e.g. schema.name-mapping.default written by
+	// Athena) are not treated as changes.
+	var stateDecoded, planDecoded any
+	if json.Unmarshal([]byte(stateVal), &stateDecoded) == nil &&
+		json.Unmarshal([]byte(planVal), &planDecoded) == nil {
 		if !reflect.DeepEqual(stateDecoded, planDecoded) {
 			return fmt.Errorf("differing property: %v", name)
 		}
