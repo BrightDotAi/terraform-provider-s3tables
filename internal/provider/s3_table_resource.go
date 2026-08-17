@@ -669,6 +669,16 @@ func refreshUntilConsistent(
 // ValidateConfig enforces that each field block has exactly one of type, list_type,
 // map_type, or struct_type set, and validates nested type ID constraints.
 func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	// Skip if any top-level list block is unknown (e.g. dynamic blocks with computed
+	// for_each). Validation cannot run on unknown values and []FieldModel /
+	// []PartitionModel cannot hold unknown lists. No error — validation re-runs once
+	// unknowns resolve.
+	for _, attrName := range []string{"field", "property", "partition"} {
+		var list types.List
+		if diags := req.Config.GetAttribute(ctx, path.Root(attrName), &list); diags.HasError() || list.IsUnknown() {
+			return
+		}
+	}
 	var data S3TableResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
