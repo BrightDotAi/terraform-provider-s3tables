@@ -732,8 +732,20 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 // ModifyPlan auto-assigns nested type IDs (list ElementID, map KeyID/ValueID) when
 // none are set by the user, ensuring the plan stored to state has canonical IDs.
 func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsFullyKnown() {
+	if req.Plan.Raw.IsNull() {
 		return
+	}
+	// Skip if any top-level list block is unknown at the list level. This happens
+	// when blocks reference computed values from other resources (dynamic blocks).
+	// We must not use IsFullyKnown() here: individual attrs within a known list
+	// (e.g. nested type IDs as types.Int64) may be unknown but req.Plan.Get still
+	// succeeds because types.Int64 handles unknowns. Only an unknown list itself
+	// cannot be decoded into []FieldModel / []PropertyModel / []PartitionModel.
+	for _, attrName := range []string{"field", "property", "partition"} {
+		var list types.List
+		if diags := req.Plan.GetAttribute(ctx, path.Root(attrName), &list); diags.HasError() || list.IsUnknown() {
+			return
+		}
 	}
 	var plan S3TableResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
