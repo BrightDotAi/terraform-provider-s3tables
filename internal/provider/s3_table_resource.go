@@ -76,13 +76,6 @@ var autoIgnoredProps = map[string]string{
 	"schema.name-mapping.default":     "",
 }
 
-// systemManagedProps is the set of Iceberg table property keys written automatically
-// by query engines (Athena, Spark, etc.) as a side effect of DML operations.
-// They are never stored in Terraform state so they never cause drift.
-var systemManagedProps = map[string]struct{}{
-	"schema.name-mapping.default": {},
-}
-
 // S3TableResource defines the resource implementation.
 type S3TableResource struct {
 	awsCfg aws.Config
