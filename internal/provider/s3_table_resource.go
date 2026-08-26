@@ -51,19 +51,29 @@ func NewS3TableResource() resource.Resource {
 // metadata to become consistent after a commit.
 const refreshMaxRetries = 8
 
-// Property defaults added to table automatically
-
-var prop_defaults = map[string]string{
+// autoIgnoredProps is the combined set of table property keys that are excluded from
+// Terraform state by default. It covers two categories:
+//
+//   - Default properties that S3 Tables adds automatically at creation time. The map
+//     value is the default string injected into the API request when the user has not
+//     declared the property; properties the user overrides are passed through normally.
+//
+//   - Properties written by query engines (Athena, Spark, etc.) as a side effect of
+//     DML operations. These have an empty string as their value because no default
+//     needs to be injected at create time.
+//
+// A property in this set is stored in state only when the user explicitly declares it
+// in a property block. Drift detection then uses the three-situation rule:
+//
+//   - In plan but not state: no error (bootstrap — state catches up after apply).
+//   - In state but not plan: no error (engine wrote it; user did not declare it).
+//   - In both plan and state: compared for equality; a mismatch is always an error
+//     because S3 Tables does not allow property value changes after creation.
+var autoIgnoredProps = map[string]string{
 	"table_type":                      "iceberg",
 	"write_compression":               "zstd",
 	"write.parquet.compression-codec": "zstd",
-}
-
-// systemManagedProps is the set of Iceberg table property keys written automatically
-// by query engines (Athena, Spark, etc.) as a side effect of DML operations.
-// They are never stored in Terraform state so they never cause drift.
-var systemManagedProps = map[string]struct{}{
-	"schema.name-mapping.default": {},
+	"schema.name-mapping.default":     "",
 }
 
 // S3TableResource defines the resource implementation.
@@ -184,13 +194,16 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 				},
 			},
 			"format_version": schema.StringAttribute{
-				MarkdownDescription: "Iceberg format version. Accepted values: `2` (default) or `3`. Version 3 is required to use column default values.",
+				MarkdownDescription: "Iceberg format version. Accepted values: `2` (default) or `3`." +
+					" Version 3 is required to use column default values.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("2"),
 			},
 			"ignore_properties": schema.ListAttribute{
-				MarkdownDescription: "Additional table property names to ignore when checking for drift. Applied on top of built-in system-managed properties (e.g. `schema.name-mapping.default`). Useful for properties written by query engines that are not in the built-in ignore list.",
+				MarkdownDescription: "Additional table property names to ignore when checking for drift." +
+					" Applied on top of built-in system-managed properties (e.g. `schema.name-mapping.default`)." +
+					" Useful for properties written by query engines that are not in the built-in ignore list.",
 				Optional:            true,
 				ElementType:         types.StringType,
 			},
@@ -201,7 +214,9 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							MarkdownDescription: "Column name. Must contain only lowercase letters, digits, and underscores, and must not start with a digit. AWS S3 Tables normalizes column names to lowercase and does not support uppercase letters.",
+							MarkdownDescription: "Column name. Must contain only lowercase letters, digits, and underscores," +
+								" and must not start with a digit. AWS S3 Tables normalizes column names to lowercase" +
+								" and does not support uppercase letters.",
 							Required:            true,
 							Validators: []validator.String{
 								stringvalidator.LengthBetween(1, 255),
@@ -212,7 +227,9 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							},
 						},
 						"type": schema.StringAttribute{
-							MarkdownDescription: "Iceberg primitive type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+							MarkdownDescription: "Iceberg primitive type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`," +
+								" `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`." +
+								" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Optional:            true,
 							Validators: []validator.String{
 								stringvalidator.ConflictsWith(
@@ -229,17 +246,20 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							Default:             booldefault.StaticBool(false),
 						},
 						"default_string": schema.StringAttribute{
-							MarkdownDescription: "Default value for string column. At most one of `default_string`, `default_bool` or `default_number` should be set.",
+							MarkdownDescription: "Default value for string column." +
+								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
 							Optional:            true,
 							Computed:            false,
 						},
 						"default_number": schema.NumberAttribute{
-							MarkdownDescription: "Default value for integer or float column. At most one of `default_string`, `default_bool` or `default_number` should be set.",
+							MarkdownDescription: "Default value for integer or float column." +
+								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
 							Optional:            true,
 							Computed:            false,
 						},
 						"default_bool": schema.BoolAttribute{
-							MarkdownDescription: "Default value for bool column. At most one of `default_string`, `default_bool` or `default_number` should be set.",
+							MarkdownDescription: "Default value for bool column." +
+								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
 							Optional:            true,
 							Computed:            false,
 						},
@@ -252,10 +272,12 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 					},
 					Blocks: map[string]schema.Block{
 						"list_type": schema.SingleNestedBlock{
-							MarkdownDescription: "Iceberg list<T> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+							MarkdownDescription: "Iceberg list<T> type." +
+							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Attributes: map[string]schema.Attribute{
 								"id": schema.Int64Attribute{
-									MarkdownDescription: "Iceberg element field ID. Optional; if any nested type IDs are set across the table, all must be set and globally unique.",
+									MarkdownDescription: "Iceberg element field ID. Optional;" +
+									" if any nested type IDs are set across the table, all must be set and globally unique.",
 									Optional:            true,
 									Computed:            true,
 								},
@@ -272,15 +294,18 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							},
 						},
 						"map_type": schema.SingleNestedBlock{
-							MarkdownDescription: "Iceberg map<K,V> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+							MarkdownDescription: "Iceberg map<K,V> type." +
+							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Attributes: map[string]schema.Attribute{
 								"key_id": schema.Int64Attribute{
-									MarkdownDescription: "Iceberg key field ID. Optional; must be set together with `value_id` if any nested type IDs are set.",
+									MarkdownDescription: "Iceberg key field ID. Optional;" +
+									" must be set together with `value_id` if any nested type IDs are set.",
 									Optional:            true,
 									Computed:            true,
 								},
 								"value_id": schema.Int64Attribute{
-									MarkdownDescription: "Iceberg value field ID. Optional; must be set together with `key_id` if any nested type IDs are set.",
+									MarkdownDescription: "Iceberg value field ID. Optional;" +
+									" must be set together with `key_id` if any nested type IDs are set.",
 									Optional:            true,
 									Computed:            true,
 								},
@@ -301,14 +326,16 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							},
 						},
 						"struct_type": schema.SingleNestedBlock{
-							MarkdownDescription: "Iceberg struct<...> type. Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+							MarkdownDescription: "Iceberg struct<...> type." +
+							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Blocks: map[string]schema.Block{
 								"field": schema.ListNestedBlock{
 									MarkdownDescription: "A field within the struct. Only primitive types are supported.",
 									NestedObject: schema.NestedBlockObject{
 										Attributes: map[string]schema.Attribute{
 											"id": schema.Int64Attribute{
-												MarkdownDescription: "Iceberg field ID for this struct sub-field. Optional; if any nested type IDs are set across the table, all must be set and globally unique.",
+												MarkdownDescription: "Iceberg field ID for this struct sub-field. Optional;" +
+											" if any nested type IDs are set across the table, all must be set and globally unique.",
 												Optional:            true,
 												Computed:            true,
 											},
@@ -319,7 +346,8 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 													stringvalidator.LengthBetween(1, 255),
 													stringvalidator.RegexMatches(
 														regexp.MustCompile(`^[a-z_][a-z0-9_]*$`),
-														"must start with a lowercase letter or underscore and contain only lowercase letters, digits, and underscores",
+														"must start with a lowercase letter or underscore"+
+															" and contain only lowercase letters, digits, and underscores",
 													),
 												},
 											},
@@ -356,7 +384,8 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							Required:            true,
 						},
 						"transform": schema.StringAttribute{
-							MarkdownDescription: "Partition transform: `identity`, `year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`.",
+							MarkdownDescription: "Partition transform:" +
+							" `identity`, `year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`.",
 							Required:            true,
 						},
 						"name": schema.StringAttribute{
@@ -396,7 +425,9 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 
 // Configure extracts the aws.Config from the provider-supplied data and stores it
 // on the resource so that CRUD operations can open a catalog connection.
-func (r *S3TableResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *S3TableResource) Configure(
+	ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse,
+) {
 	if req.ProviderData == nil {
 		return
 	}
@@ -654,6 +685,7 @@ func refreshUntilConsistent(
 		}
 		var model S3TableResourceModel
 		model.IgnoreProperties = plan.IgnoreProperties
+		model.Properties = plan.Properties // seed so setModelFromTable preserves user-declared system-managed props
 		if err := setModelFromTable(&model, tbl); err != nil {
 			lastErr = err
 			continue
@@ -668,7 +700,9 @@ func refreshUntilConsistent(
 
 // ValidateConfig enforces that each field block has exactly one of type, list_type,
 // map_type, or struct_type set, and validates nested type ID constraints.
-func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+func (r *S3TableResource) ValidateConfig(
+	ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse,
+) {
 	// Skip if any top-level list block is unknown (e.g. dynamic blocks with computed
 	// for_each). Validation cannot run on unknown values and []FieldModel /
 	// []PartitionModel cannot hold unknown lists. No error — validation re-runs once
@@ -730,7 +764,10 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 			resp.Diagnostics.AddAttributeError(
 				fp.AtName("type"),
 				"Invalid field type",
-				fmt.Sprintf("field %q: exactly one of type, list_type, map_type, or struct_type must be set (got %d)", f.Name.ValueString(), typeCount),
+				fmt.Sprintf(
+					"field %q: exactly one of type, list_type, map_type, or struct_type must be set (got %d)",
+					f.Name.ValueString(), typeCount,
+				),
 			)
 		}
 	}
@@ -741,8 +778,10 @@ func (r *S3TableResource) ValidateConfig(ctx context.Context, req resource.Valid
 
 // ModifyPlan auto-assigns nested type IDs (list ElementID, map KeyID/ValueID) when
 // none are set by the user, ensuring the plan stored to state has canonical IDs.
-func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || !req.Plan.Raw.IsKnown() {
+func (r *S3TableResource) ModifyPlan(
+	ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse,
+) {
+	if req.Plan.Raw.IsNull() {
 		return
 	}
 	// Skip if any top-level list block is unknown at the list level. This happens
@@ -772,7 +811,9 @@ func (r *S3TableResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 }
 
 // ImportState accepts: warehouse,region,namespace,name
-func (r *S3TableResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+func (r *S3TableResource) ImportState(
+	ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse,
+) {
 	parts := strings.SplitN(req.ID, ",", 4)
 	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
 		resp.Diagnostics.AddError(
@@ -787,7 +828,7 @@ func (r *S3TableResource) ImportState(ctx context.Context, req resource.ImportSt
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), parts[3])...)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── helpers ──────────────────────────────────────────────────────────────
 
 // GetCatalog -  connect to catalog using glue RESTful endpoint
 func (data *S3TableResourceModel) GetCatalog(ctx context.Context, awsCfg aws.Config) (*rest.Catalog, error) {
@@ -995,7 +1036,10 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 	}
 
 	if setSlots != 0 && setSlots != totalSlots {
-		return nil, fmt.Errorf("nested type IDs: either all must be specified or none; got %d of %d set", setSlots, totalSlots)
+		return nil, fmt.Errorf(
+			"nested type IDs: either all must be specified or none; got %d of %d set",
+			setSlots, totalSlots,
+		)
 	}
 
 	// Validate map key_id/value_id pairing.
@@ -1004,7 +1048,10 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 			keySet := idIsSet(f.MapType.KeyID)
 			valSet := idIsSet(f.MapType.ValueID)
 			if keySet != valSet {
-				return nil, fmt.Errorf("field %q map_type: key_id and value_id must both be set or both omitted", f.Name.ValueString())
+				return nil, fmt.Errorf(
+					"field %q map_type: key_id and value_id must both be set or both omitted",
+					f.Name.ValueString(),
+				)
 			}
 		}
 	}
@@ -1064,7 +1111,10 @@ func validateNestedIDUniqueness(fields []FieldModel) error {
 		if f.ListType != nil && !f.ListType.ElementType.IsNull() {
 			id := f.ListType.ID.ValueInt64()
 			if prev, ok := seen[id]; ok {
-				return fmt.Errorf("duplicate nested type ID %d (field %q list_type conflicts with %q)", id, f.Name.ValueString(), prev)
+				return fmt.Errorf(
+					"duplicate nested type ID %d (field %q list_type conflicts with %q)",
+					id, f.Name.ValueString(), prev,
+				)
 			}
 			seen[id] = f.Name.ValueString() + ".list_type"
 		}
@@ -1077,7 +1127,10 @@ func validateNestedIDUniqueness(fields []FieldModel) error {
 			for _, pair := range [][2]any{{kid, "key_id"}, {vid, "value_id"}} {
 				id, label := pair[0].(int64), pair[1].(string)
 				if prev, ok := seen[id]; ok {
-					return fmt.Errorf("duplicate nested type ID %d (%s of field %q conflicts with %q)", id, label, f.Name.ValueString(), prev)
+					return fmt.Errorf(
+						"duplicate nested type ID %d (%s of field %q conflicts with %q)",
+						id, label, f.Name.ValueString(), prev,
+					)
 				}
 				seen[id] = fmt.Sprintf("%s.map_type.%s", f.Name.ValueString(), label)
 			}
@@ -1086,7 +1139,10 @@ func validateNestedIDUniqueness(fields []FieldModel) error {
 			for _, sf := range f.StructType.Fields {
 				id := sf.ID.ValueInt64()
 				if prev, ok := seen[id]; ok {
-					return fmt.Errorf("duplicate nested type ID %d (struct sub-field %q of field %q conflicts with %q)", id, sf.Name.ValueString(), f.Name.ValueString(), prev)
+					return fmt.Errorf(
+						"duplicate nested type ID %d (struct sub-field %q of field %q conflicts with %q)",
+						id, sf.Name.ValueString(), f.Name.ValueString(), prev,
+					)
 				}
 				seen[id] = fmt.Sprintf("%s.struct_type.%s", f.Name.ValueString(), sf.Name.ValueString())
 			}
@@ -1157,7 +1213,10 @@ func (f *FieldModel) toNestedField(fieldID int) (*iceberg.NestedField, error) {
 		typ = &iceberg.StructType{FieldList: subFields}
 
 	default:
-		return nil, fmt.Errorf("field %q: exactly one of type, list_type, map_type, struct_type must be set", f.Name.ValueString())
+		return nil, fmt.Errorf(
+			"field %q: exactly one of type, list_type, map_type, struct_type must be set",
+			f.Name.ValueString(),
+		)
 	}
 
 	var dv any
@@ -1186,7 +1245,10 @@ func (f *FieldModel) getFieldDefault() (any, error) {
 	// Nested type fields cannot have defaults.
 	if f.Type.IsNull() || f.Type.IsUnknown() {
 		if !f.DefaultString.IsNull() || !f.DefaultNumber.IsNull() || !f.DefaultBool.IsNull() {
-			return nil, fmt.Errorf("field %q: defaults are not supported for nested types (list_type, map_type, struct_type)", f.Name.ValueString())
+			return nil, fmt.Errorf(
+				"field %q: defaults are not supported for nested types (list_type, map_type, struct_type)",
+				f.Name.ValueString(),
+			)
 		}
 		return nil, nil
 	}
@@ -1305,7 +1367,9 @@ func anyToIcebergLit(typ string, d any) (iceberg.Literal, error) {
 
 // Retrieving state
 
-// setModelFromTable - set model fields, partition spec, properties from iceberg table
+// setModelFromTable - set model fields, partition spec, properties from iceberg table.
+// data.Properties (previous state) is read before being overwritten: any system-managed
+// prop already in state was explicitly declared by the user and must be preserved.
 func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 	var err error
 	version := strconv.Itoa(tbl.Metadata().Version())
@@ -1317,7 +1381,17 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 	}
 	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
 
-	data.Properties = propertiesToPropertyModels(tbl.Properties(), ignorePropsSet(data.IgnoreProperties))
+	// Carry forward auto-ignored props that were already in state (meaning the user
+	// declared them in a property block and wants them tracked).
+	userDeclaredProps := make(map[string]struct{})
+	for _, p := range data.Properties {
+		if _, isAutoIgnored := autoIgnoredProps[p.Name.ValueString()]; isAutoIgnored {
+			userDeclaredProps[p.Name.ValueString()] = struct{}{}
+		}
+	}
+	data.Properties = propertiesToPropertyModels(
+		tbl.Properties(), ignorePropsSet(data.IgnoreProperties), userDeclaredProps,
+	)
 	return nil
 }
 
@@ -1374,8 +1448,11 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 	for _, prop := range props {
 		iproperties[prop.Name.ValueString()] = prop.Value.ValueString()
 	}
-	// defaults added by s3tables:
-	for name, val := range prop_defaults {
+	// Inject default values for auto-ignored properties not overridden by the user.
+	for name, val := range autoIgnoredProps {
+		if val == "" {
+			continue // engine-managed; no default to inject
+		}
 		if _, exists := iproperties[name]; !exists {
 			iproperties[name] = val
 		}
@@ -1515,10 +1592,13 @@ func ignorePropsSet(ignore types.List) map[string]struct{} {
 	return result
 }
 
-// propertiesToPropertyModels converts Iceberg table properties to Terraform models,
-// filtering out format-version, built-in prop_defaults, systemManagedProps, and any
-// keys in extraIgnore (from the resource's ignore_properties field).
-func propertiesToPropertyModels(props iceberg.Properties, extraIgnore map[string]struct{}) []PropertyModel {
+// propertiesToPropertyModels converts Iceberg table properties to Terraform models.
+// Filters out: format-version, extraIgnore keys, and autoIgnoredProps unless the key
+// appears in userDeclaredProps (meaning the user previously declared it in a property
+// block and wants it tracked for drift).
+func propertiesToPropertyModels(
+	props iceberg.Properties, extraIgnore, userDeclaredProps map[string]struct{},
+) []PropertyModel {
 	models := make([]PropertyModel, 0)
 
 	prop_names := make([]string, 0)
@@ -1531,19 +1611,19 @@ func propertiesToPropertyModels(props iceberg.Properties, extraIgnore map[string
 		if name == "format-version" {
 			continue
 		}
-		if _, ignored := systemManagedProps[name]; ignored {
-			continue
-		}
 		if _, ignored := extraIgnore[name]; ignored {
 			continue
 		}
-		if dv, exists := prop_defaults[name]; !exists || props[name] != dv {
-			models = append(models, PropertyModel{
-				Name:  types.StringValue(name),
-				Value: types.StringValue(props[name]),
-				Type:  types.StringValue("text"),
-			})
+		if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
+			if _, declared := userDeclaredProps[name]; !declared {
+				continue
+			}
 		}
+		models = append(models, PropertyModel{
+			Name:  types.StringValue(name),
+			Value: types.StringValue(props[name]),
+			Type:  types.StringValue("text"),
+		})
 	}
 	return models
 }
@@ -1554,7 +1634,9 @@ func propertiesToPropertyModels(props iceberg.Properties, extraIgnore map[string
 // iceberg-go concrete types so that Apply* functions can be tested without a
 // real catalog connection.
 type schemaUpdater interface {
-	AddColumn(path []string, fieldType iceberg.Type, doc string, required bool, defaultValue iceberg.Literal) *itable.UpdateSchema
+	AddColumn(
+		path []string, fieldType iceberg.Type, doc string, required bool, defaultValue iceberg.Literal,
+	) *itable.UpdateSchema
 	DeleteColumn(path []string) *itable.UpdateSchema
 	UpdateColumn(path []string, update itable.ColumnUpdate) *itable.UpdateSchema
 	Commit() error
@@ -1724,62 +1806,68 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 	return updater.Commit()
 }
 
-// filterIgnoredProps removes entries whose name is in systemManagedProps or extraIgnore
-// from a property slice. Filtering systemManagedProps here (in addition to
-// propertiesToPropertyModels) ensures that if a user has explicitly declared a
-// system-managed key in a property block, the plan-side copy is also dropped so
-// checkPropChanges does not treat the state/plan asymmetry as a real change.
-func filterIgnoredProps(props []PropertyModel, extraIgnore map[string]struct{}) []PropertyModel {
-	result := make([]PropertyModel, 0, len(props))
-	for _, p := range props {
+// checkPropChanges returns an error when the plan properties differ from state.
+// extraIgnore (ignore_properties field) keys are dropped from both sides.
+// autoIgnoredProps follow the three-situation rule:
+//   - In state but not plan: silently dropped (engine side-effect not declared by user).
+//   - In plan but not state: allowed without error (bootstrap — state was filtered on the
+//     previous Read; setModelFromTable includes it going forward once plan.Properties
+//     seeds model.Properties in refreshUntilConsistent).
+//   - In both plan and state: compared for equality; a mismatch is always an error
+//     because S3 Tables does not allow property value changes after creation.
+func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[string]struct{}) error {
+	// Build plan lookup for reference in state filtering.
+	planByName := make(map[string]PropertyModel, len(planProps))
+	for _, p := range planProps {
+		planByName[p.Name.ValueString()] = p
+	}
+
+	// Effective state: drop extraIgnore and autoIgnoredProps not declared in plan.
+	effectiveState := make(map[string]PropertyModel, len(stateProps))
+	for _, p := range stateProps {
 		name := p.Name.ValueString()
-		if _, ignored := systemManagedProps[name]; ignored {
-			continue
-		}
 		if _, ignored := extraIgnore[name]; ignored {
 			continue
 		}
-		result = append(result, p)
+		if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
+			if _, inPlan := planByName[name]; !inPlan {
+				continue
+			}
+		}
+		effectiveState[name] = p
 	}
-	return result
-}
 
-// checkPropChanges returns an error when the plan properties differ from state after
-// filtering out entries listed in extraIgnore (the resource's ignore_properties field).
-// Filtering both sides handles the transition case where an ignored property is still
-// present in state from a previous Read that ran before ignore_properties was set.
-// Table property updates are not supported by the Iceberg catalog; on mismatch the
-// error message includes the filtered state properties as copy-pasteable HCL blocks.
-func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[string]struct{}) error {
-	stateProps = filterIgnoredProps(stateProps, extraIgnore)
-	planProps = filterIgnoredProps(planProps, extraIgnore)
-
-	current := make(map[string]PropertyModel)
-	for _, p := range stateProps {
-		current[p.Name.ValueString()] = p
-	}
-	plan := make(map[string]PropertyModel)
+	// Effective plan: drop extraIgnore only (auto-ignored props stay if user declared them).
+	effectivePlan := make(map[string]PropertyModel, len(planProps))
 	for _, p := range planProps {
-		plan[p.Name.ValueString()] = p
+		name := p.Name.ValueString()
+		if _, ignored := extraIgnore[name]; ignored {
+			continue
+		}
+		effectivePlan[name] = p
 	}
 
-	mismatch := len(current) != len(plan)
-	if !mismatch {
-		for name, pp := range plan {
-			sp, exists := current[name]
-			if !exists {
-				mismatch = true
-				break
+	mismatch := false
+	for name, pp := range effectivePlan {
+		sp, exists := effectiveState[name]
+		if !exists {
+			// Bootstrap: auto-ignored prop declared in plan but not yet in state.
+			if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
+				continue
 			}
-			if err := checkPropValueEqual(name, sp.Value.ValueString(), pp.Value.ValueString(), pp.Type.ValueString()); err != nil {
-				mismatch = true
-				break
-			}
+			mismatch = true
+			break
+		}
+		if err := checkPropValueEqual(
+			name, sp.Value.ValueString(), pp.Value.ValueString(), pp.Type.ValueString(),
+		); err != nil {
+			mismatch = true
+			break
 		}
 	}
 	if !mismatch {
-		for name := range current {
-			if _, exists := plan[name]; !exists {
+		for name := range effectiveState {
+			if _, exists := effectivePlan[name]; !exists {
 				mismatch = true
 				break
 			}
@@ -1788,7 +1876,15 @@ func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[str
 	if !mismatch {
 		return nil
 	}
-	return propertyMismatchErr(stateProps)
+
+	// Build ordered state slice for error message.
+	stateSlice := make([]PropertyModel, 0, len(effectiveState))
+	for _, p := range stateProps {
+		if _, ok := effectiveState[p.Name.ValueString()]; ok {
+			stateSlice = append(stateSlice, p)
+		}
+	}
+	return propertyMismatchErr(stateSlice)
 }
 
 // propertyMismatchErr builds a human-friendly error for property mismatches that
@@ -1858,36 +1954,36 @@ func nestedTypeUpdateErrMsg(origErr error, stateFields []FieldModel) string {
 	sb.WriteString(origErr.Error())
 	sb.WriteString("\n\n")
 	sb.WriteString("The Iceberg catalog cannot change the type of an existing list, map, or struct column.\n")
-	sb.WriteString("This usually means the provider assigned different nested-type IDs than the catalog originally chose.\n\n")
-	sb.WriteString("Add explicit id attributes to your configuration matching the values below, then re-run terraform apply:\n\n")
+	sb.WriteString("This usually means the provider assigned different nested-type IDs" +
+		" than the catalog originally chose.\n\n")
+	sb.WriteString("Add explicit id attributes to your configuration matching the values" +
+		" below, then re-run terraform apply:\n\n")
 
 	for i, f := range stateFields {
 		topID := i + 1
 		switch {
 		case f.ListType != nil:
-			fmt.Fprintf(&sb, "  field {\n    name = %q\n    list_type {\n      id       = %d\n      type     = %q\n      required = %v\n    }\n  }\n",
-				f.Name.ValueString(),
-				f.ListType.ID.ValueInt64(),
-				f.ListType.ElementType.ValueString(),
-				f.ListType.Required.ValueBool(),
+			fmt.Fprintf(&sb,
+				"  field {\n    name = %q\n    list_type {\n      id       = %d\n"+
+					"      type     = %q\n      required = %v\n    }\n  }\n",
+				f.Name.ValueString(), f.ListType.ID.ValueInt64(),
+				f.ListType.ElementType.ValueString(), f.ListType.Required.ValueBool(),
 			)
 		case f.MapType != nil:
-			fmt.Fprintf(&sb, "  field {\n    name = %q\n    map_type {\n      key_id         = %d\n      value_id       = %d\n      key_type       = %q\n      value_type     = %q\n      required       = %v\n    }\n  }\n",
-				f.Name.ValueString(),
-				f.MapType.KeyID.ValueInt64(),
-				f.MapType.ValueID.ValueInt64(),
-				f.MapType.KeyType.ValueString(),
-				f.MapType.ValueType.ValueString(),
-				f.MapType.Required.ValueBool(),
+			fmt.Fprintf(&sb,
+				"  field {\n    name = %q\n    map_type {\n      key_id         = %d\n"+
+					"      value_id       = %d\n      key_type       = %q\n"+
+					"      value_type     = %q\n      required       = %v\n    }\n  }\n",
+				f.Name.ValueString(), f.MapType.KeyID.ValueInt64(), f.MapType.ValueID.ValueInt64(),
+				f.MapType.KeyType.ValueString(), f.MapType.ValueType.ValueString(), f.MapType.Required.ValueBool(),
 			)
 		case f.StructType != nil:
 			fmt.Fprintf(&sb, "  field {\n    name = %q\n    struct_type {\n", f.Name.ValueString())
 			for _, sf := range f.StructType.Fields {
-				fmt.Fprintf(&sb, "      field {\n        id       = %d\n        name     = %q\n        type     = %q\n        required = %v\n      }\n",
-					sf.ID.ValueInt64(),
-					sf.Name.ValueString(),
-					sf.Type.ValueString(),
-					sf.Required.ValueBool(),
+				fmt.Fprintf(&sb,
+					"      field {\n        id       = %d\n        name     = %q\n"+
+						"        type     = %q\n        required = %v\n      }\n",
+					sf.ID.ValueInt64(), sf.Name.ValueString(), sf.Type.ValueString(), sf.Required.ValueBool(),
 				)
 			}
 			sb.WriteString("    }\n  }\n")
@@ -1951,7 +2047,11 @@ func parseIcebergType(s string) (iceberg.Type, error) {
 		return iceberg.DecimalTypeOf(precision, scale), nil
 	}
 
-	return nil, fmt.Errorf("unsupported type %q: use boolean, int, long, float, double, date, time, timestamp, timestamptz, string, binary, uuid, fixed[N], or decimal(P,S)", s)
+	return nil, fmt.Errorf(
+		"unsupported type %q: use boolean, int, long, float, double, date, time,"+
+			" timestamp, timestamptz, string, binary, uuid, fixed[N], or decimal(P,S)",
+		s,
+	)
 }
 
 // isNotFound returns true when the Glue catalog error indicates the resource does not exist.
