@@ -51,19 +51,29 @@ func NewS3TableResource() resource.Resource {
 // metadata to become consistent after a commit.
 const refreshMaxRetries = 8
 
-// Property defaults added to table automatically
-
-var prop_defaults = map[string]string{
+// autoIgnoredProps is the combined set of table property keys that are excluded from
+// Terraform state by default. It covers two categories:
+//
+//   - Default properties that S3 Tables adds automatically at creation time. The map
+//     value is the default string injected into the API request when the user has not
+//     declared the property; properties the user overrides are passed through normally.
+//
+//   - Properties written by query engines (Athena, Spark, etc.) as a side effect of
+//     DML operations. These have an empty string as their value because no default
+//     needs to be injected at create time.
+//
+// A property in this set is stored in state only when the user explicitly declares it
+// in a property block. Drift detection then uses the three-situation rule:
+//
+//   - In plan but not state: no error (bootstrap — state catches up after apply).
+//   - In state but not plan: no error (engine wrote it; user did not declare it).
+//   - In both plan and state: compared for equality; a mismatch is always an error
+//     because S3 Tables does not allow property value changes after creation.
+var autoIgnoredProps = map[string]string{
 	"table_type":                      "iceberg",
 	"write_compression":               "zstd",
 	"write.parquet.compression-codec": "zstd",
-}
-
-// systemManagedProps is the set of Iceberg table property keys written automatically
-// by query engines (Athena, Spark, etc.) as a side effect of DML operations.
-// They are never stored in Terraform state so they never cause drift.
-var systemManagedProps = map[string]struct{}{
-	"schema.name-mapping.default": {},
+	"schema.name-mapping.default":     "",
 }
 
 // S3TableResource defines the resource implementation.
@@ -1371,15 +1381,16 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 	}
 	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
 
-	// Carry forward system-managed props that were already in state (user declared).
-	userDeclaredSystemProps := make(map[string]struct{})
+	// Carry forward auto-ignored props that were already in state (meaning the user
+	// declared them in a property block and wants them tracked).
+	userDeclaredProps := make(map[string]struct{})
 	for _, p := range data.Properties {
-		if _, isSystem := systemManagedProps[p.Name.ValueString()]; isSystem {
-			userDeclaredSystemProps[p.Name.ValueString()] = struct{}{}
+		if _, isAutoIgnored := autoIgnoredProps[p.Name.ValueString()]; isAutoIgnored {
+			userDeclaredProps[p.Name.ValueString()] = struct{}{}
 		}
 	}
 	data.Properties = propertiesToPropertyModels(
-		tbl.Properties(), ignorePropsSet(data.IgnoreProperties), userDeclaredSystemProps,
+		tbl.Properties(), ignorePropsSet(data.IgnoreProperties), userDeclaredProps,
 	)
 	return nil
 }
@@ -1437,8 +1448,11 @@ func BuildProperties(props []PropertyModel, version string) (*iceberg.Properties
 	for _, prop := range props {
 		iproperties[prop.Name.ValueString()] = prop.Value.ValueString()
 	}
-	// defaults added by s3tables:
-	for name, val := range prop_defaults {
+	// Inject default values for auto-ignored properties not overridden by the user.
+	for name, val := range autoIgnoredProps {
+		if val == "" {
+			continue // engine-managed; no default to inject
+		}
 		if _, exists := iproperties[name]; !exists {
 			iproperties[name] = val
 		}
@@ -1579,11 +1593,11 @@ func ignorePropsSet(ignore types.List) map[string]struct{} {
 }
 
 // propertiesToPropertyModels converts Iceberg table properties to Terraform models.
-// Filters out: format-version, prop_defaults at their default value, extraIgnore keys,
-// and systemManagedProps unless the key appears in includeSystemProps (meaning the user
-// previously declared it in their configuration and it should be compared for drift).
+// Filters out: format-version, extraIgnore keys, and autoIgnoredProps unless the key
+// appears in userDeclaredProps (meaning the user previously declared it in a property
+// block and wants it tracked for drift).
 func propertiesToPropertyModels(
-	props iceberg.Properties, extraIgnore, includeSystemProps map[string]struct{},
+	props iceberg.Properties, extraIgnore, userDeclaredProps map[string]struct{},
 ) []PropertyModel {
 	models := make([]PropertyModel, 0)
 
@@ -1600,18 +1614,16 @@ func propertiesToPropertyModels(
 		if _, ignored := extraIgnore[name]; ignored {
 			continue
 		}
-		if _, isSystem := systemManagedProps[name]; isSystem {
-			if _, include := includeSystemProps[name]; !include {
+		if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
+			if _, declared := userDeclaredProps[name]; !declared {
 				continue
 			}
 		}
-		if dv, exists := prop_defaults[name]; !exists || props[name] != dv {
-			models = append(models, PropertyModel{
-				Name:  types.StringValue(name),
-				Value: types.StringValue(props[name]),
-				Type:  types.StringValue("text"),
-			})
-		}
+		models = append(models, PropertyModel{
+			Name:  types.StringValue(name),
+			Value: types.StringValue(props[name]),
+			Type:  types.StringValue("text"),
+		})
 	}
 	return models
 }
@@ -1796,12 +1808,13 @@ func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions
 
 // checkPropChanges returns an error when the plan properties differ from state.
 // extraIgnore (ignore_properties field) keys are dropped from both sides.
-// System-managed properties follow conditional logic:
-//   - If not declared in plan: dropped from state (engine side-effects, no drift).
-//   - If declared in plan and present in state: compared normally.
-//   - If declared in plan but absent from state: allowed without error (bootstrap —
-//     the property was not yet in state; setModelFromTable will include it going
-//     forward once plan.Properties seeds model.Properties in refreshUntilConsistent).
+// autoIgnoredProps follow the three-situation rule:
+//   - In state but not plan: silently dropped (engine side-effect not declared by user).
+//   - In plan but not state: allowed without error (bootstrap — state was filtered on the
+//     previous Read; setModelFromTable includes it going forward once plan.Properties
+//     seeds model.Properties in refreshUntilConsistent).
+//   - In both plan and state: compared for equality; a mismatch is always an error
+//     because S3 Tables does not allow property value changes after creation.
 func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[string]struct{}) error {
 	// Build plan lookup for reference in state filtering.
 	planByName := make(map[string]PropertyModel, len(planProps))
@@ -1809,14 +1822,14 @@ func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[str
 		planByName[p.Name.ValueString()] = p
 	}
 
-	// Effective state: skip extraIgnore; skip system-managed not declared in plan.
+	// Effective state: drop extraIgnore and autoIgnoredProps not declared in plan.
 	effectiveState := make(map[string]PropertyModel, len(stateProps))
 	for _, p := range stateProps {
 		name := p.Name.ValueString()
 		if _, ignored := extraIgnore[name]; ignored {
 			continue
 		}
-		if _, isSystem := systemManagedProps[name]; isSystem {
+		if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
 			if _, inPlan := planByName[name]; !inPlan {
 				continue
 			}
@@ -1824,7 +1837,7 @@ func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[str
 		effectiveState[name] = p
 	}
 
-	// Effective plan: skip extraIgnore only (system-managed stay if user declared).
+	// Effective plan: drop extraIgnore only (auto-ignored props stay if user declared them).
 	effectivePlan := make(map[string]PropertyModel, len(planProps))
 	for _, p := range planProps {
 		name := p.Name.ValueString()
@@ -1834,16 +1847,12 @@ func checkPropChanges(stateProps, planProps []PropertyModel, extraIgnore map[str
 		effectivePlan[name] = p
 	}
 
-	// Also handle transition case: extraIgnore prop in state from before ignore list
-	// was set. Already handled since state side also skips extraIgnore.
-
 	mismatch := false
 	for name, pp := range effectivePlan {
 		sp, exists := effectiveState[name]
 		if !exists {
-			// Bootstrap: system-managed declared in plan but not yet in state.
-			// Not an error — state will include it after apply.
-			if _, isSystem := systemManagedProps[name]; isSystem {
+			// Bootstrap: auto-ignored prop declared in plan but not yet in state.
+			if _, isAutoIgnored := autoIgnoredProps[name]; isAutoIgnored {
 				continue
 			}
 			mismatch = true

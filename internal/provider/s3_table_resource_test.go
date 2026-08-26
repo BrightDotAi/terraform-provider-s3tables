@@ -319,6 +319,15 @@ func TestToNestedField(t *testing.T) {
 }
 
 func TestBuildProperties(t *testing.T) {
+	// wantDefaults is the number of autoIgnoredProps that have a non-empty default value
+	// (i.e. the properties injected by BuildProperties for the API call).
+	wantDefaults := 0
+	for _, v := range autoIgnoredProps {
+		if v != "" {
+			wantDefaults++
+		}
+	}
+
 	t.Run("user_props_plus_defaults", func(t *testing.T) {
 		props := []PropertyModel{
 			{Name: types.StringValue("write.metadata.compression-codec"), Value: types.StringValue("gzip")},
@@ -328,14 +337,17 @@ func TestBuildProperties(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildProperties() error: %v", err)
 		}
-		wantLen := 2 + len(prop_defaults)
+		wantLen := 2 + wantDefaults
 		if len(*p) != wantLen {
-			t.Fatalf("expected %d properties (user + defaults), got %d", wantLen, len(*p))
+			t.Fatalf("expected %d properties (user + injected defaults), got %d", wantLen, len(*p))
 		}
 		if (*p)["write.metadata.compression-codec"] != "gzip" {
 			t.Errorf("compression-codec = %q, want %q", (*p)["write.metadata.compression-codec"], "gzip")
 		}
-		for name, val := range prop_defaults {
+		for name, val := range autoIgnoredProps {
+			if val == "" {
+				continue
+			}
 			if (*p)[name] != val {
 				t.Errorf("default property %q = %q, want %q", name, (*p)[name], val)
 			}
@@ -360,10 +372,13 @@ func TestBuildProperties(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildProperties() error: %v", err)
 		}
-		if len(*p) != len(prop_defaults) {
-			t.Fatalf("expected %d default properties, got %d", len(prop_defaults), len(*p))
+		if len(*p) != wantDefaults {
+			t.Fatalf("expected %d injected default properties, got %d", wantDefaults, len(*p))
 		}
-		for name, val := range prop_defaults {
+		for name, val := range autoIgnoredProps {
+			if val == "" {
+				continue
+			}
 			if (*p)[name] != val {
 				t.Errorf("default property %q = %q, want %q", name, (*p)[name], val)
 			}
@@ -406,18 +421,53 @@ func TestBuildProperties(t *testing.T) {
 }
 
 func TestPropertiesToPropertyModels(t *testing.T) {
-	t.Run("default_props_filtered_out", func(t *testing.T) {
+	// auto_ignored_props_filtered_out verifies that every key in autoIgnoredProps is
+	// excluded from state when not declared by the user (userDeclaredProps is nil).
+	t.Run("auto_ignored_props_filtered_out", func(t *testing.T) {
 		props := iceberg.Properties{
-			"table_type":        "iceberg",
-			"write_compression": "zstd",
+			"table_type":                      "iceberg",
+			"write_compression":               "zstd",
+			"write.parquet.compression-codec": "zstd",
+			"schema.name-mapping.default":     `[{"field-id":1,"names":["col"]}]`,
 		}
 		models := propertiesToPropertyModels(props, nil, nil)
 		if len(models) != 0 {
-			t.Errorf("expected default-only properties to produce 0 models, got %d: %v", len(models), models)
+			t.Errorf("expected all auto-ignored props to produce 0 models, got %d: %v", len(models), models)
 		}
 	})
 
-	t.Run("non_default_props_included", func(t *testing.T) {
+	// auto_ignored_with_non_default_value_still_filtered verifies the combined rule:
+	// auto-ignored props are filtered regardless of value, not just at their default value.
+	t.Run("auto_ignored_with_non_default_value_still_filtered", func(t *testing.T) {
+		props := iceberg.Properties{
+			"write_compression": "snappy", // non-default value, but still auto-ignored
+		}
+		models := propertiesToPropertyModels(props, nil, nil)
+		if len(models) != 0 {
+			t.Errorf("expected 0 models: auto-ignored prop filtered regardless of value, got %d: %v", len(models), models)
+		}
+	})
+
+	// user_declared_auto_ignored_included verifies that when the user puts an auto-ignored
+	// prop in their property block (userDeclaredProps contains it), it appears in state.
+	t.Run("user_declared_auto_ignored_included", func(t *testing.T) {
+		props := iceberg.Properties{
+			"write_compression":               "snappy",
+			"schema.name-mapping.default":     `[{"field-id":1}]`,
+			"write.metadata.compression-codec": "gzip",
+		}
+		userDeclared := map[string]struct{}{
+			"write_compression":           {},
+			"schema.name-mapping.default": {},
+		}
+		models := propertiesToPropertyModels(props, nil, userDeclared)
+		// Expect write_compression, schema.name-mapping.default, write.metadata.compression-codec
+		if len(models) != 3 {
+			t.Fatalf("expected 3 models, got %d: %v", len(models), models)
+		}
+	})
+
+	t.Run("non_auto_ignored_props_included", func(t *testing.T) {
 		props := iceberg.Properties{
 			"table_type":                       "iceberg",
 			"write_compression":                "zstd",
@@ -425,7 +475,7 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 		}
 		models := propertiesToPropertyModels(props, nil, nil)
 		if len(models) != 1 {
-			t.Fatalf("expected 1 model (non-default prop), got %d", len(models))
+			t.Fatalf("expected 1 model (non-auto-ignored prop), got %d", len(models))
 		}
 		if models[0].Name.ValueString() != "write.metadata.compression-codec" {
 			t.Errorf("model name = %q, want %q", models[0].Name.ValueString(), "write.metadata.compression-codec")
@@ -435,47 +485,9 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 		}
 	})
 
-	t.Run("overridden_default_included", func(t *testing.T) {
-		props := iceberg.Properties{
-			"table_type":        "iceberg",
-			"write_compression": "snappy",
-		}
-		models := propertiesToPropertyModels(props, nil, nil)
-		if len(models) != 1 {
-			t.Fatalf("expected 1 model (overridden default), got %d", len(models))
-		}
-		if models[0].Name.ValueString() != "write_compression" || models[0].Value.ValueString() != "snappy" {
-			t.Errorf("unexpected model: %+v", models[0])
-		}
-	})
-
-	t.Run("system_managed_props_filtered_out", func(t *testing.T) {
-		props := iceberg.Properties{
-			"schema.name-mapping.default":      `[{"field-id":1,"names":["col"]}]`,
-			"write.metadata.compression-codec": "gzip",
-		}
-		models := propertiesToPropertyModels(props, nil, nil)
-		if len(models) != 1 {
-			t.Fatalf("expected 1 model (non-system prop), got %d: %v", len(models), models)
-		}
-		if models[0].Name.ValueString() != "write.metadata.compression-codec" {
-			t.Errorf("unexpected model name: %q", models[0].Name.ValueString())
-		}
-	})
-
-	t.Run("system_managed_only_produces_no_models", func(t *testing.T) {
-		props := iceberg.Properties{
-			"schema.name-mapping.default": `[{"field-id":1,"names":["col"]}]`,
-		}
-		models := propertiesToPropertyModels(props, nil, nil)
-		if len(models) != 0 {
-			t.Errorf("expected 0 models for system-managed-only props, got %d", len(models))
-		}
-	})
-
 	t.Run("ignore_properties_filters_named_prop", func(t *testing.T) {
 		props := iceberg.Properties{
-			"custom.engine.stats": "100",
+			"custom.engine.stats":              "100",
 			"write.metadata.compression-codec": "gzip",
 		}
 		ignore := ignorePropsSet(types.ListValueMust(types.StringType, []attr.Value{
@@ -884,16 +896,49 @@ func TestPropertyMismatchErr(t *testing.T) {
 		}
 	})
 
-	t.Run("checkPropChanges_system_managed_in_plan_only_no_error", func(t *testing.T) {
-		// Bootstrap: user just added a system-managed prop to config. State doesn't have it yet
-		// (previous Read stripped it). checkPropChanges should not error — state will catch up after apply.
-		state := []PropertyModel{pm("user.prop", "v")}
-		plan := []PropertyModel{pm("user.prop", "v"), pm("schema.name-mapping.default", `[{"field-id":1}]`)}
-		err := checkPropChanges(state, plan, nil)
-		if err != nil {
-			t.Errorf("expected no error when system-managed prop in plan only, got: %v", err)
+	// The three-situation rule applied to every auto-ignored property:
+	//   1. In plan but not state → bootstrap, no error.
+	//   2. In state but not plan → engine side-effect not declared, no error.
+	//   3. In both plan and state → compared; mismatch is an error.
+	for propName, defaultVal := range autoIgnoredProps {
+		propName, defaultVal := propName, defaultVal // capture for closure
+		sampleVal := defaultVal
+		if sampleVal == "" {
+			sampleVal = `[{"field-id":1}]`
 		}
-	})
+
+		t.Run("auto_ignored_in_plan_only_no_error/"+propName, func(t *testing.T) {
+			state := []PropertyModel{pm("user.prop", "v")}
+			plan := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal)}
+			if err := checkPropChanges(state, plan, nil); err != nil {
+				t.Errorf("expected no error (bootstrap), got: %v", err)
+			}
+		})
+
+		t.Run("auto_ignored_in_state_only_no_error/"+propName, func(t *testing.T) {
+			state := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal)}
+			plan := []PropertyModel{pm("user.prop", "v")}
+			if err := checkPropChanges(state, plan, nil); err != nil {
+				t.Errorf("expected no error (engine side-effect), got: %v", err)
+			}
+		})
+
+		t.Run("auto_ignored_in_both_equal_no_error/"+propName, func(t *testing.T) {
+			state := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal)}
+			plan := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal)}
+			if err := checkPropChanges(state, plan, nil); err != nil {
+				t.Errorf("expected no error (equal values), got: %v", err)
+			}
+		})
+
+		t.Run("auto_ignored_in_both_mismatch_errors/"+propName, func(t *testing.T) {
+			state := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal)}
+			plan := []PropertyModel{pm("user.prop", "v"), pm(propName, sampleVal+"_different")}
+			if err := checkPropChanges(state, plan, nil); err == nil {
+				t.Errorf("expected error for mismatched auto-ignored prop %q, got nil", propName)
+			}
+		})
+	}
 }
 
 func TestCheckPropValueEqual(t *testing.T) {
