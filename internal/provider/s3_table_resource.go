@@ -21,9 +21,15 @@ import (
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	"github.com/apache/iceberg-go/catalog/rest"
-	_ "github.com/apache/iceberg-go/io"
+	// Registers the s3:// (and gs://, abfs://) IO schemes. iceberg-go's
+	// Table.doCommit opens the table location's IO before issuing the catalog
+	// commit; without this import every schema/partition update fails with
+	// "io scheme not registered" before reaching the REST endpoint.
+	_ "github.com/apache/iceberg-go/io/gocloud"
 	itable "github.com/apache/iceberg-go/table"
+	"github.com/apache/iceberg-go/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -210,7 +216,10 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 		},
 		Blocks: map[string]schema.Block{
 			"field": schema.ListNestedBlock{
-				MarkdownDescription: "Iceberg schema column.",
+				MarkdownDescription: "Iceberg schema column. At least one field is required.",
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+				},
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{
@@ -548,6 +557,12 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// The transaction commit opens an S3 IO for the table location. Put the
+	// provider's AWS config on the context so that IO uses the same credentials,
+	// profile and region as the catalog client instead of the default chain.
+	awsCfg := r.awsCfg
+	ctx = utils.WithAwsConfig(ctx, &awsCfg)
+
 	cat, err := state.GetCatalog(ctx, r.awsCfg)
 	if err != nil {
 		resp.Diagnostics.AddError("Error Connecting to Iceberg Catalog", err.Error())
@@ -559,6 +574,16 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 	tbl, err := cat.LoadTable(ctx, identifier)
 	if err != nil {
 		resp.Diagnostics.AddError("Error loading Iceberg table for update", err.Error())
+		return
+	}
+
+	// Defense in depth: a plan with zero fields (e.g. a dynamic block over an
+	// empty map that validation could not see) would delete every column.
+	if len(plan.Fields) == 0 {
+		resp.Diagnostics.AddError("Refusing to remove every column from table",
+			fmt.Sprintf("the plan for %s.%s declares no fields; a table must keep at least one column."+
+				" Check the configuration that produces the field blocks.",
+				plan.Namespace.ValueString(), plan.Name.ValueString()))
 		return
 	}
 
@@ -586,15 +611,44 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
-	_, _ = txn.Commit(ctx)
-	// Ignoring errors from Commit because of bug loading reloading meta-data after
-	// commit causes spurious errors.
-	// Instead will refresh table and reload state to confirm updates have been
-	// applied correctly.
+	// Log what the transaction is about to change so a DEBUG log shows whether
+	// the commit below is a no-op.
+	added, removed, updated := schemaChangeSummary(state.Fields, plan.Fields)
+	tflog.Debug(ctx, "staged table update", map[string]any{
+		"fields_added":     added,
+		"fields_removed":   removed,
+		"fields_updated":   updated,
+		"state_partitions": partitionSummary(state.Partitions),
+		"plan_partitions":  partitionSummary(plan.Partitions),
+	})
 
-	result, err := refreshUntilConsistent(ctx, cat, identifier, plan, 1*time.Second, time.Sleep)
+	_, commitErr := txn.Commit(ctx)
+	// A commit error is not treated as fatal on its own: older iceberg-go
+	// versions returned errors from post-commit steps after the catalog had
+	// already accepted the change. The table is reloaded below to confirm
+	// whether the update landed; if it did not, the commit error is reported
+	// as the primary diagnostic.
+	if commitErr != nil {
+		tflog.Warn(ctx, "iceberg transaction commit returned error; verifying via reload", map[string]any{
+			"error": commitErr.Error(),
+		})
+	}
+
+	sleepCtx := func(d time.Duration) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(d):
+		}
+	}
+	result, err := refreshUntilConsistent(ctx, cat, identifier, plan, 1*time.Second, sleepCtx)
 	if err != nil {
-		resp.Diagnostics.AddError("Error loading iceberg table after commit", err.Error())
+		if commitErr != nil {
+			resp.Diagnostics.AddError("Error committing Iceberg table update",
+				commitErr.Error()+"\n\nreload after commit: "+err.Error())
+		} else {
+			resp.Diagnostics.AddError("Error loading iceberg table after commit",
+				err.Error()+"\n\ncommit error: none")
+		}
 		return
 	}
 	plan.Fields = result.Fields
@@ -677,9 +731,18 @@ func refreshUntilConsistent(
 				map[string]any{"attempt": attempt, "backoff_ms": backoff.Milliseconds()})
 			sleepFn(backoff)
 			backoff *= 2
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf(
+					"aborted while waiting for table metadata to become consistent: %w (last error: %v)",
+					ctxErr, lastErr,
+				)
+			}
 		}
 		tbl, err := cat.LoadTable(ctx, identifier)
 		if err != nil {
+			tflog.Debug(ctx, "load table after commit failed", map[string]any{
+				"attempt": attempt + 1, "error": err.Error(),
+			})
 			lastErr = err
 			continue
 		}
@@ -687,15 +750,136 @@ func refreshUntilConsistent(
 		model.IgnoreProperties = plan.IgnoreProperties
 		model.Properties = plan.Properties // seed so setModelFromTable preserves user-declared system-managed props
 		if err := setModelFromTable(&model, tbl); err != nil {
+			tflog.Debug(ctx, "converting loaded table after commit failed", map[string]any{
+				"attempt": attempt + 1, "error": err.Error(),
+			})
 			lastErr = err
 			continue
 		}
-		if reflect.DeepEqual(model.Fields, plan.Fields) && partitionsMatch(plan.Partitions, model.Partitions) {
+		if fieldsEqual(model.Fields, plan.Fields) && partitionsMatch(plan.Partitions, model.Partitions) {
 			return &model, nil
 		}
-		lastErr = fmt.Errorf("table metadata not consistent after %d attempt(s)", attempt+1)
+		diff := describeModelDiff(plan, model)
+		tflog.Debug(ctx, "table metadata differs from plan after commit", map[string]any{
+			"attempt": attempt + 1, "diff": diff,
+		})
+		lastErr = fmt.Errorf("table metadata not consistent after %d attempt(s):\n%s", attempt+1, diff)
 	}
 	return nil, lastErr
+}
+
+// fieldsEqual reports whether two field lists are identical in order and content.
+// Unlike reflect.DeepEqual on the slices it treats a nil slice (a plan with no
+// field blocks decodes to nil) and an empty slice (loaded from the catalog via
+// make) as equal.
+func fieldsEqual(a, b []FieldModel) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !reflect.DeepEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// schemaChangeSummary lists the field names ApplySchemaChanges would add, remove,
+// and update when moving from stateFields to planFields. Used for debug logging.
+func schemaChangeSummary(stateFields, planFields []FieldModel) (added, removed, updated []string) {
+	current := make(map[string]FieldModel, len(stateFields))
+	for _, f := range stateFields {
+		current[f.Name.ValueString()] = f
+	}
+	planned := make(map[string]struct{}, len(planFields))
+	for _, pf := range planFields {
+		name := pf.Name.ValueString()
+		planned[name] = struct{}{}
+		cf, exists := current[name]
+		switch {
+		case !exists:
+			added = append(added, name)
+		case !fieldModelsEqual(cf, pf):
+			updated = append(updated, name)
+		}
+	}
+	for _, f := range stateFields {
+		if _, ok := planned[f.Name.ValueString()]; !ok {
+			removed = append(removed, f.Name.ValueString())
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(updated)
+	return added, removed, updated
+}
+
+// partitionSummary renders partitions as "name=source:transform" strings.
+func partitionSummary(parts []PartitionModel) []string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, fmt.Sprintf("%s=%s:%s",
+			p.Name.ValueString(), p.SourceName.ValueString(), p.Transform.ValueString()))
+	}
+	return out
+}
+
+// fieldSummary renders a FieldModel compactly for diagnostics. attr String()
+// forms are used so null/unknown values are visible.
+func fieldSummary(f FieldModel) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s type=%s required=%s doc=%s",
+		f.Name.ValueString(), f.Type.String(), f.Required.String(), f.Doc.String())
+	if !f.DefaultString.IsNull() {
+		fmt.Fprintf(&b, " default_string=%s", f.DefaultString.String())
+	}
+	if !f.DefaultNumber.IsNull() {
+		fmt.Fprintf(&b, " default_number=%s", f.DefaultNumber.String())
+	}
+	if !f.DefaultBool.IsNull() {
+		fmt.Fprintf(&b, " default_bool=%s", f.DefaultBool.String())
+	}
+	if f.ListType != nil {
+		fmt.Fprintf(&b, " list_type=%+v", *f.ListType)
+	}
+	if f.MapType != nil {
+		fmt.Fprintf(&b, " map_type=%+v", *f.MapType)
+	}
+	if f.StructType != nil {
+		fmt.Fprintf(&b, " struct_type=%+v", *f.StructType)
+	}
+	return b.String()
+}
+
+// describeModelDiff renders a positional comparison of plan vs loaded fields and
+// the two partition lists. Positions whose FieldModels are not deeply equal are
+// marked with "!". Used when the post-commit reload never matches the plan.
+func describeModelDiff(plan, got S3TableResourceModel) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "fields: plan has %d, catalog has %d\n", len(plan.Fields), len(got.Fields))
+	n := max(len(plan.Fields), len(got.Fields))
+	for i := 0; i < n; i++ {
+		p, g := "<missing>", "<missing>"
+		mismatch := true
+		if i < len(plan.Fields) {
+			p = fieldSummary(plan.Fields[i])
+		}
+		if i < len(got.Fields) {
+			g = fieldSummary(got.Fields[i])
+		}
+		if i < len(plan.Fields) && i < len(got.Fields) {
+			mismatch = !reflect.DeepEqual(plan.Fields[i], got.Fields[i])
+		}
+		marker := "  "
+		if mismatch {
+			marker = "! "
+		}
+		fmt.Fprintf(&b, "%s[%d] plan:    %s\n%s[%d] catalog: %s\n", marker, i, p, marker, i, g)
+	}
+	fmt.Fprintf(&b, "partitions: plan=%v catalog=%v (match=%t)",
+		partitionSummary(plan.Partitions), partitionSummary(got.Partitions),
+		partitionsMatch(plan.Partitions, got.Partitions))
+	return b.String()
 }
 
 // ValidateConfig enforces that each field block has exactly one of type, list_type,
@@ -716,6 +900,15 @@ func (r *S3TableResource) ValidateConfig(
 	var data S3TableResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if len(data.Fields) == 0 {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("field"),
+			"Table has no fields",
+			"At least one field block is required. Applying a table with no fields would remove every column"+
+				" from an existing table.",
+		)
 		return
 	}
 	for i, f := range data.Fields {

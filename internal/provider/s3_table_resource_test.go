@@ -11,12 +11,14 @@ import (
 	"math/big"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	iceberg "github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
+	iceio "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	fwpath "github.com/hashicorp/terraform-plugin-framework/path"
@@ -1407,6 +1409,139 @@ func TestRefreshUntilConsistent(t *testing.T) {
 			t.Errorf("expected 'persistent error', got %v", err)
 		}
 	})
+
+	t.Run("always_stale_error_names_differing_field", func(t *testing.T) {
+		// Catalog echoes a schema whose second column is named differently and
+		// has an extra trailing column: the error must name both discrepancies.
+		gotFields := []FieldModel{fm("id"), fm("ts_renamed"), fm("extra")}
+		gotTbl := buildTestTable(t, gotFields, nil)
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			return gotTbl, nil
+		}}
+		_, err := refreshUntilConsistent(ctx, cat, identifier, plan, time.Millisecond,
+			func(time.Duration) {})
+		if err == nil {
+			t.Fatal("expected error when never consistent, got nil")
+		}
+		msg := err.Error()
+		for _, want := range []string{
+			"not consistent after 9 attempt(s)",
+			"plan has 2, catalog has 3",
+			"! [1] plan:    ts type=",
+			"! [1] catalog: ts_renamed type=",
+			"! [2] plan:    <missing>",
+			"! [2] catalog: extra type=",
+			"  [0] plan:    id type=",
+			"partitions: plan=[ts_part=ts:identity] catalog=[] (match=false)",
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error message missing %q:\n%s", want, msg)
+			}
+		}
+	})
+
+	t.Run("empty_plan_and_empty_catalog_are_consistent", func(t *testing.T) {
+		// A plan with no field blocks decodes to a nil slice; the catalog side is
+		// an empty non-nil slice. They must compare equal.
+		emptyPlan := S3TableResourceModel{Fields: nil, Partitions: nil}
+		emptyTbl := buildTestTable(t, []FieldModel{}, nil)
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			return emptyTbl, nil
+		}}
+		result, err := refreshUntilConsistent(ctx, cat, identifier, emptyPlan, time.Millisecond,
+			func(time.Duration) {})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if calls != 1 || result == nil {
+			t.Errorf("calls=%d result=%v, want 1 call and non-nil result", calls, result)
+		}
+	})
+
+	t.Run("cancelled_context_aborts_after_first_sleep", func(t *testing.T) {
+		cctx, cancel := context.WithCancel(ctx)
+		calls := 0
+		cat := &mockCatalog{loadTableFn: func(_ context.Context, _ itable.Identifier) (*itable.Table, error) {
+			calls++
+			return staleTbl, nil
+		}}
+		_, err := refreshUntilConsistent(cctx, cat, identifier, plan, time.Millisecond,
+			func(time.Duration) { cancel() })
+		if err == nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if calls != 1 {
+			t.Errorf("LoadTable called %d times, want 1 (no retries after cancel)", calls)
+		}
+		if !strings.Contains(err.Error(), "last error: table metadata not consistent") {
+			t.Errorf("error should carry last inconsistency, got: %v", err)
+		}
+	})
+}
+
+// TestS3IOSchemeRegistered guards the side-effect import of iceberg-go/io/gocloud.
+// Table.doCommit resolves an IO for the table's s3:// location before issuing the
+// catalog commit, so a missing registration silently breaks every schema update.
+func TestS3IOSchemeRegistered(t *testing.T) {
+	schemes := iceio.GetRegisteredSchemes()
+	for _, want := range []string{"s3", "s3a"} {
+		if !slices.Contains(schemes, want) {
+			t.Errorf("IO scheme %q not registered (have %v); is iceberg-go/io/gocloud imported?", want, schemes)
+		}
+	}
+}
+
+func TestFieldsEqual(t *testing.T) {
+	f := func(name string) FieldModel {
+		return FieldModel{Name: types.StringValue(name), Type: types.StringValue("string"),
+			Required: types.BoolValue(false), Doc: types.StringValue(""),
+			DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull()}
+	}
+	cases := []struct {
+		name string
+		a, b []FieldModel
+		want bool
+	}{
+		{"nil_vs_empty", nil, []FieldModel{}, true},
+		{"empty_vs_nil", []FieldModel{}, nil, true},
+		{"same", []FieldModel{f("a"), f("b")}, []FieldModel{f("a"), f("b")}, true},
+		{"order_differs", []FieldModel{f("a"), f("b")}, []FieldModel{f("b"), f("a")}, false},
+		{"length_differs", []FieldModel{f("a")}, []FieldModel{f("a"), f("b")}, false},
+	}
+	for _, c := range cases {
+		if got := fieldsEqual(c.a, c.b); got != c.want {
+			t.Errorf("%s: fieldsEqual = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestSchemaChangeSummary(t *testing.T) {
+	fm := func(name, typ string) FieldModel {
+		return FieldModel{
+			Name: types.StringValue(name), Type: types.StringValue(typ),
+			Required: types.BoolValue(false), Doc: types.StringValue(""),
+			DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+		}
+	}
+	state := []FieldModel{fm("a", "string"), fm("b", "long"), fm("c", "double")}
+	plan := []FieldModel{fm("c", "double"), fm("b", "string"), fm("d", "double")}
+	added, removed, updated := schemaChangeSummary(state, plan)
+	if !reflect.DeepEqual(added, []string{"d"}) {
+		t.Errorf("added = %v, want [d]", added)
+	}
+	if !reflect.DeepEqual(removed, []string{"a"}) {
+		t.Errorf("removed = %v, want [a]", removed)
+	}
+	if !reflect.DeepEqual(updated, []string{"b"}) {
+		t.Errorf("updated = %v, want [b]", updated)
+	}
+	// Reordering alone is not a change.
+	added, removed, updated = schemaChangeSummary(state, []FieldModel{fm("c", "double"), fm("a", "string"), fm("b", "long")})
+	if len(added)+len(removed)+len(updated) != 0 {
+		t.Errorf("reorder reported as change: added=%v removed=%v updated=%v", added, removed, updated)
+	}
 }
 
 // TestBuildSchema_NestedTypes covers list, map, and struct type schema building.
