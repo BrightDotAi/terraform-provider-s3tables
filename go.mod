@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/apache/iceberg-go v0.6.0
-	github.com/aws/aws-sdk-go-v2 v1.46.0
+	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
 	github.com/aws/aws-sdk-go-v2/service/lakeformation v1.54.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
