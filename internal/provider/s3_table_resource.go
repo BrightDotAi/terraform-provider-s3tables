@@ -964,7 +964,7 @@ func (r *S3TableResource) ValidateConfig(
 			)
 		}
 	}
-	if _, err := resolveNestedIDs(data.Fields); err != nil {
+	if _, _, err := resolveNestedIDs(data.Fields); err != nil {
 		resp.Diagnostics.AddError("Invalid nested type IDs", err.Error())
 	}
 }
@@ -994,7 +994,7 @@ func (r *S3TableResource) ModifyPlan(
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	resolved, err := resolveNestedIDs(plan.Fields)
+	resolved, _, err := resolveNestedIDs(plan.Fields)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid nested type IDs", err.Error())
 		return
@@ -1196,9 +1196,19 @@ func idIsSet(v types.Int64) bool {
 }
 
 // resolveNestedIDs either validates user-provided nested type IDs (uniqueness,
-// completeness) or auto-assigns them sequentially when none are set.
-// Top-level fields occupy IDs 1..len(fields). Nested IDs start from len(fields)+1.
-func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
+// completeness) or auto-assigns them sequentially when none are set. It returns
+// the (possibly updated) fields and the top-level field ID for each field.
+//
+// When nested IDs are explicitly set, top-level field IDs are assigned from the
+// complement of the nested-ID set within [1, N+K], where N = len(fields) and K
+// is the total number of nested ID slots. This avoids collisions when the user
+// picks nested IDs that fall in the range otherwise reserved for top-level fields:
+//
+//	fieldIDs = [i for i in range(1, N+K+1) if i not in nestedIDs][:N]
+//
+// When no nested IDs are set, top-level field IDs are 1..N and nested IDs are
+// auto-assigned starting from N+1.
+func resolveNestedIDs(fields []FieldModel) ([]FieldModel, []int, error) {
 	// Count total nested ID slots and how many are user-set.
 	totalSlots := 0
 	setSlots := 0
@@ -1229,7 +1239,7 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 	}
 
 	if setSlots != 0 && setSlots != totalSlots {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"nested type IDs: either all must be specified or none; got %d of %d set",
 			setSlots, totalSlots,
 		)
@@ -1241,7 +1251,7 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 			keySet := idIsSet(f.MapType.KeyID)
 			valSet := idIsSet(f.MapType.ValueID)
 			if keySet != valSet {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"field %q map_type: key_id and value_id must both be set or both omitted",
 					f.Name.ValueString(),
 				)
@@ -1249,15 +1259,20 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 		}
 	}
 
-	if setSlots == totalSlots && totalSlots > 0 {
-		return fields, validateNestedIDUniqueness(fields)
-	}
-
 	if totalSlots == 0 {
-		return fields, nil
+		// No nested types. Top-level field IDs are simply 1..N.
+		return fields, seqFieldIDs(len(fields)), nil
 	}
 
-	// Auto-assign: counter starts after top-level field IDs (1..N).
+	if setSlots == totalSlots {
+		// All nested IDs are explicitly set. Compute top-level field IDs as the
+		// complement of the nested-ID set within [1, N+K].
+		nestedIDSet := collectNestedIDs(fields)
+		fieldIDs := complementFieldIDs(len(fields), totalSlots, nestedIDSet)
+		return fields, fieldIDs, validateNestedIDUniqueness(fields, fieldIDs)
+	}
+
+	// Auto-assign: top-level field IDs are 1..N; nested IDs start from N+1.
 	counter := len(fields) + 1
 	result := make([]FieldModel, len(fields))
 	copy(result, fields)
@@ -1289,16 +1304,63 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, error) {
 			f.StructType = &st
 		}
 	}
-	return result, nil
+	return result, seqFieldIDs(len(fields)), nil
+}
+
+// seqFieldIDs returns the slice [1, 2, ..., n].
+func seqFieldIDs(n int) []int {
+	ids := make([]int, n)
+	for i := range ids {
+		ids[i] = i + 1
+	}
+	return ids
+}
+
+// collectNestedIDs builds the set of all explicitly-set nested type IDs across fields.
+func collectNestedIDs(fields []FieldModel) map[int64]struct{} {
+	ids := make(map[int64]struct{})
+	for _, f := range fields {
+		if f.ListType != nil && idIsSet(f.ListType.ID) {
+			ids[f.ListType.ID.ValueInt64()] = struct{}{}
+		}
+		if f.MapType != nil {
+			if idIsSet(f.MapType.KeyID) {
+				ids[f.MapType.KeyID.ValueInt64()] = struct{}{}
+			}
+			if idIsSet(f.MapType.ValueID) {
+				ids[f.MapType.ValueID.ValueInt64()] = struct{}{}
+			}
+		}
+		if f.StructType != nil {
+			for _, sf := range f.StructType.Fields {
+				if idIsSet(sf.ID) {
+					ids[sf.ID.ValueInt64()] = struct{}{}
+				}
+			}
+		}
+	}
+	return ids
+}
+
+// complementFieldIDs returns the first n integers from [1, n+k] that are not in
+// nestedIDSet. If nested IDs fall outside [1, n+k] (leaving the full range
+// available), this produces [1..n] unchanged. The result always has length n.
+func complementFieldIDs(n, k int, nestedIDSet map[int64]struct{}) []int {
+	result := make([]int, 0, n)
+	for i := 1; len(result) < n; i++ {
+		if _, inNested := nestedIDSet[int64(i)]; !inNested {
+			result = append(result, i)
+		}
+	}
+	return result
 }
 
 // validateNestedIDUniqueness checks that all explicitly set nested type IDs
 // are unique across the entire schema (including top-level field IDs).
-func validateNestedIDUniqueness(fields []FieldModel) error {
+func validateNestedIDUniqueness(fields []FieldModel, fieldIDs []int) error {
 	seen := make(map[int64]string)
 	for i, f := range fields {
-		id := int64(i + 1)
-		seen[id] = f.Name.ValueString()
+		seen[int64(fieldIDs[i])] = f.Name.ValueString()
 	}
 	for _, f := range fields {
 		if f.ListType != nil && !f.ListType.ElementType.IsNull() {
@@ -1590,13 +1652,13 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 
 // BuildSchema converts Terraform field models to an Iceberg schema.
 func BuildSchema(fields []FieldModel) (*iceberg.Schema, error) {
-	resolved, err := resolveNestedIDs(fields)
+	resolved, fieldIDs, err := resolveNestedIDs(fields)
 	if err != nil {
 		return nil, err
 	}
 	nestedFields := make([]iceberg.NestedField, 0, len(resolved))
 	for i, f := range resolved {
-		nf, err := f.toNestedField(i + 1)
+		nf, err := f.toNestedField(fieldIDs[i])
 		if err != nil {
 			return nil, err
 		}

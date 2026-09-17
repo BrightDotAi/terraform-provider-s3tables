@@ -1665,20 +1665,28 @@ func TestBuildSchema_NestedTypes(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate_ids_rejected", func(t *testing.T) {
+	t.Run("list_nested_id_avoids_field_id_collision", func(t *testing.T) {
+		// list ElementID=1 explicitly set; 1 field → field ID = complement of {1} in [1,2] = 2.
 		fields := []FieldModel{
 			{
 				Name: types.StringValue("items"), Required: types.BoolValue(false), Doc: types.StringValue(""),
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Value(1), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Value(1), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
+				},
 			},
 		}
-		_, err := BuildSchema(fields)
-		if err == nil {
-			t.Fatal("expected error for duplicate ID 1 (same as top-level field), got nil")
+		s, err := BuildSchema(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.Fields()[0].ID != 2 {
+			t.Errorf("field ID = %d, want 2", s.Fields()[0].ID)
+		}
+		lt := s.Fields()[0].Type.(*iceberg.ListType)
+		if lt.ElementID != 1 {
+			t.Errorf("ElementID = %d, want 1", lt.ElementID)
 		}
 	})
 
@@ -1850,7 +1858,7 @@ func TestResolveNestedIDs(t *testing.T) {
 			Required: types.BoolValue(false), Doc: types.StringValue(""),
 			DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 		}}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1873,7 +1881,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				ListType: makeList(types.Int64Null()),
 			},
 		}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1891,7 +1899,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				MapType: makeMap(types.Int64Null(), types.Int64Null()),
 			},
 		}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1912,7 +1920,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				ListType: makeList(types.Int64Value(10)),
 			},
 		}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1936,24 +1944,31 @@ func TestResolveNestedIDs(t *testing.T) {
 				ListType: makeList(types.Int64Null()),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
+		_, _, err := resolveNestedIDs(fields)
 		if err == nil {
 			t.Fatal("expected error for partial ID specification")
 		}
 	})
 
-	t.Run("duplicate_ids_error", func(t *testing.T) {
+	t.Run("list_nested_id_avoids_field_id_collision", func(t *testing.T) {
+		// list ElementID=1 explicitly set; 1 field → field ID is complement of {1} in [1,2] = [2].
 		fields := []FieldModel{
 			{
 				Name: types.StringValue("items"), Type: types.StringNull(),
 				Required: types.BoolValue(false), Doc: types.StringValue(""),
 				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
-				ListType: makeList(types.Int64Value(1)), // ID 1 collides with top-level field 1
+				ListType: makeList(types.Int64Value(1)),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
-		if err == nil {
-			t.Fatal("expected error for duplicate ID")
+		got, fieldIDs, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fieldIDs[0] != 2 {
+			t.Errorf("field ID = %d, want 2", fieldIDs[0])
+		}
+		if got[0].ListType.ID.ValueInt64() != 1 {
+			t.Errorf("list ElementID = %d, want 1", got[0].ListType.ID.ValueInt64())
 		}
 	})
 
@@ -1966,7 +1981,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				MapType: makeMap(types.Int64Value(5), types.Int64Value(5)),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
+		_, _, err := resolveNestedIDs(fields)
 		if err == nil {
 			t.Fatal("expected error for key_id == value_id")
 		}
@@ -1981,7 +1996,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				MapType: makeMap(types.Int64Value(5), types.Int64Null()),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
+		_, _, err := resolveNestedIDs(fields)
 		if err == nil {
 			t.Fatal("expected error for key_id set without value_id")
 		}
@@ -2008,7 +2023,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				StructType: makeStruct(types.Int64Null(), types.Int64Null()),
 			},
 		}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2029,7 +2044,7 @@ func TestResolveNestedIDs(t *testing.T) {
 				StructType: makeStruct(types.Int64Value(10), types.Int64Value(11)),
 			},
 		}
-		got, err := resolveNestedIDs(fields)
+		got, _, err := resolveNestedIDs(fields)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -2050,24 +2065,68 @@ func TestResolveNestedIDs(t *testing.T) {
 				StructType: makeStruct(types.Int64Value(10), types.Int64Null()),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
+		_, _, err := resolveNestedIDs(fields)
 		if err == nil {
 			t.Fatal("expected error for partial struct sub-field IDs")
 		}
 	})
 
-	t.Run("struct_duplicate_id_rejected", func(t *testing.T) {
+	t.Run("struct_nested_ids_avoid_field_id_collision", func(t *testing.T) {
+		// struct sub-field IDs {1,2} explicitly set; 1 field → field ID = complement of {1,2} in [1,3] = [3].
 		fields := []FieldModel{
 			{
 				Name: types.StringValue("addr"), Type: types.StringNull(),
 				Required: types.BoolValue(false), Doc: types.StringValue(""),
 				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
-				StructType: makeStruct(types.Int64Value(1), types.Int64Value(2)), // 1 collides with top-level field ID
+				StructType: makeStruct(types.Int64Value(1), types.Int64Value(2)),
 			},
 		}
-		_, err := resolveNestedIDs(fields)
-		if err == nil {
-			t.Fatal("expected error for struct sub-field ID colliding with top-level field ID")
+		_, fieldIDs, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fieldIDs[0] != 3 {
+			t.Errorf("field ID = %d, want 3", fieldIDs[0])
+		}
+	})
+
+	t.Run("new_fields_added_with_explicit_nested_ids_pinned_to_current_values", func(t *testing.T) {
+		// Simulates: current state has 2 fields ("x": int, "tags": list<string>).
+		// Auto-assigned IDs: x=1, tags=2, tags.list_element=3.
+		// Target state: same 2 fields with list ElementID pinned to 3 (explicit),
+		// plus a new field "count": int appended.
+		// Expected: nestedIDSet={3}; fieldIDs = complement of {3} in [1,4] = [1,2,4].
+		// "tags" list ElementID stays 3; new field "count" gets ID 4.
+		primField := func(name string) FieldModel {
+			return FieldModel{
+				Name: types.StringValue(name), Type: types.StringValue("int"),
+				Required: types.BoolValue(false), Doc: types.StringValue(""),
+				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+			}
+		}
+		fields := []FieldModel{
+			primField("x"),
+			{
+				Name: types.StringValue("tags"), Type: types.StringNull(),
+				Required: types.BoolValue(false), Doc: types.StringValue(""),
+				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: makeList(types.Int64Value(3)), // pinned to current value
+			},
+			primField("count"), // new field
+		}
+		got, fieldIDs, err := resolveNestedIDs(fields)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// field IDs: complement of {3} in [1..4] = [1, 2, 4]
+		want := []int{1, 2, 4}
+		for i, wantID := range want {
+			if fieldIDs[i] != wantID {
+				t.Errorf("fieldIDs[%d] = %d, want %d", i, fieldIDs[i], wantID)
+			}
+		}
+		if got[1].ListType.ID.ValueInt64() != 3 {
+			t.Errorf("tags list ElementID = %d, want 3", got[1].ListType.ID.ValueInt64())
 		}
 	})
 }
