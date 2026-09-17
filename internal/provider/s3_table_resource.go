@@ -126,18 +126,18 @@ type StructSubFieldModel struct {
 
 // ListTypeModel represents a list<T> Iceberg column type.
 type ListTypeModel struct {
-	ID              types.Int64  `tfsdk:"id"`
-	ElementType     types.String `tfsdk:"type"`
-	Required        types.Bool   `tfsdk:"required"`
+	ID          types.Int64  `tfsdk:"id"`
+	ElementType types.String `tfsdk:"type"`
+	Required    types.Bool   `tfsdk:"required"`
 }
 
 // MapTypeModel represents a map<K,V> Iceberg column type.
 type MapTypeModel struct {
-	KeyID         types.Int64  `tfsdk:"key_id"`
-	ValueID       types.Int64  `tfsdk:"value_id"`
-	KeyType       types.String `tfsdk:"key_type"`
-	ValueType     types.String `tfsdk:"value_type"`
-	Required      types.Bool   `tfsdk:"required"`
+	KeyID     types.Int64  `tfsdk:"key_id"`
+	ValueID   types.Int64  `tfsdk:"value_id"`
+	KeyType   types.String `tfsdk:"key_type"`
+	ValueType types.String `tfsdk:"value_type"`
+	Required  types.Bool   `tfsdk:"required"`
 }
 
 // StructTypeModel represents a struct<...> Iceberg column type.
@@ -202,16 +202,16 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 			"format_version": schema.StringAttribute{
 				MarkdownDescription: "Iceberg format version. Accepted values: `2` (default) or `3`." +
 					" Version 3 is required to use column default values.",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("2"),
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("2"),
 			},
 			"ignore_properties": schema.ListAttribute{
 				MarkdownDescription: "Additional table property names to ignore when checking for drift." +
 					" Applied on top of built-in system-managed properties (e.g. `schema.name-mapping.default`)." +
 					" Useful for properties written by query engines that are not in the built-in ignore list.",
-				Optional:            true,
-				ElementType:         types.StringType,
+				Optional:    true,
+				ElementType: types.StringType,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -226,7 +226,7 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							MarkdownDescription: "Column name. Must contain only lowercase letters, digits, and underscores," +
 								" and must not start with a digit. AWS S3 Tables normalizes column names to lowercase" +
 								" and does not support uppercase letters.",
-							Required:            true,
+							Required: true,
 							Validators: []validator.String{
 								stringvalidator.LengthBetween(1, 255),
 								stringvalidator.RegexMatches(
@@ -239,7 +239,7 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 							MarkdownDescription: "Iceberg primitive type: `boolean`, `int`, `long`, `float`, `double`, `date`, `time`," +
 								" `timestamp`, `timestamptz`, `string`, `binary`, `uuid`, `fixed[N]`, `decimal(P,S)`." +
 								" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
-							Optional:            true,
+							Optional: true,
 							Validators: []validator.String{
 								stringvalidator.ConflictsWith(
 									path.MatchRelative().AtParent().AtName("list_type"),
@@ -257,20 +257,20 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 						"default_string": schema.StringAttribute{
 							MarkdownDescription: "Default value for string column." +
 								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
-							Optional:            true,
-							Computed:            false,
+							Optional: true,
+							Computed: false,
 						},
 						"default_number": schema.NumberAttribute{
 							MarkdownDescription: "Default value for integer or float column." +
 								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
-							Optional:            true,
-							Computed:            false,
+							Optional: true,
+							Computed: false,
 						},
 						"default_bool": schema.BoolAttribute{
 							MarkdownDescription: "Default value for bool column." +
 								" At most one of `default_string`, `default_bool` or `default_number` should be set.",
-							Optional:            true,
-							Computed:            false,
+							Optional: true,
+							Computed: false,
 						},
 						"doc": schema.StringAttribute{
 							MarkdownDescription: "Documentation string for the column.",
@@ -282,13 +282,13 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 					Blocks: map[string]schema.Block{
 						"list_type": schema.SingleNestedBlock{
 							MarkdownDescription: "Iceberg list<T> type." +
-							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+								" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Attributes: map[string]schema.Attribute{
 								"id": schema.Int64Attribute{
 									MarkdownDescription: "Iceberg element field ID. Optional;" +
-									" if any nested type IDs are set across the table, all must be set and globally unique.",
-									Optional:            true,
-									Computed:            true,
+										" if any nested type IDs are set across the table, all must be set and globally unique.",
+									Optional: true,
+									Computed: true,
 								},
 								"type": schema.StringAttribute{
 									MarkdownDescription: "Primitive type of list elements. Required when `list_type` block is set.",
@@ -304,19 +304,19 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 						},
 						"map_type": schema.SingleNestedBlock{
 							MarkdownDescription: "Iceberg map<K,V> type." +
-							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+								" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Attributes: map[string]schema.Attribute{
 								"key_id": schema.Int64Attribute{
 									MarkdownDescription: "Iceberg key field ID. Optional;" +
-									" must be set together with `value_id` if any nested type IDs are set.",
-									Optional:            true,
-									Computed:            true,
+										" must be set together with `value_id` if any nested type IDs are set.",
+									Optional: true,
+									Computed: true,
 								},
 								"value_id": schema.Int64Attribute{
 									MarkdownDescription: "Iceberg value field ID. Optional;" +
-									" must be set together with `key_id` if any nested type IDs are set.",
-									Optional:            true,
-									Computed:            true,
+										" must be set together with `key_id` if any nested type IDs are set.",
+									Optional: true,
+									Computed: true,
 								},
 								"key_type": schema.StringAttribute{
 									MarkdownDescription: "Primitive type of map keys. Required when `map_type` block is set.",
@@ -336,7 +336,7 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 						},
 						"struct_type": schema.SingleNestedBlock{
 							MarkdownDescription: "Iceberg struct<...> type." +
-							" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
+								" Exactly one of `type`, `list_type`, `map_type`, or `struct_type` must be set.",
 							Blocks: map[string]schema.Block{
 								"field": schema.ListNestedBlock{
 									MarkdownDescription: "A field within the struct. Only primitive types are supported.",
@@ -344,9 +344,9 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 										Attributes: map[string]schema.Attribute{
 											"id": schema.Int64Attribute{
 												MarkdownDescription: "Iceberg field ID for this struct sub-field. Optional;" +
-											" if any nested type IDs are set across the table, all must be set and globally unique.",
-												Optional:            true,
-												Computed:            true,
+													" if any nested type IDs are set across the table, all must be set and globally unique.",
+												Optional: true,
+												Computed: true,
 											},
 											"name": schema.StringAttribute{
 												MarkdownDescription: "Sub-field name.",
@@ -394,8 +394,8 @@ func (r *S3TableResource) Schema(ctx context.Context, req resource.SchemaRequest
 						},
 						"transform": schema.StringAttribute{
 							MarkdownDescription: "Partition transform:" +
-							" `identity`, `year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`.",
-							Required:            true,
+								" `identity`, `year`, `month`, `day`, `hour`, `bucket[N]`, `truncate[N]`.",
+							Required: true,
 						},
 						"name": schema.StringAttribute{
 							MarkdownDescription: "Name for this partition field.",
@@ -999,6 +999,13 @@ func (r *S3TableResource) ModifyPlan(
 		resp.Diagnostics.AddError("Invalid nested type IDs", err.Error())
 		return
 	}
+	if hint := nestedIDsAutoAssignHint(plan.Fields, resolved); hint != "" {
+		resp.Diagnostics.AddWarning(
+			"Nested type IDs auto-assigned",
+			"Iceberg nested type IDs were assigned automatically. Pin them explicitly in your "+
+				"configuration to avoid errors when adding new fields later:\n\n"+hint,
+		)
+	}
 	plan.Fields = resolved
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
@@ -1187,8 +1194,6 @@ func fieldModelToIcebergType(f FieldModel) (iceberg.Type, error) {
 	}
 }
 
-
-
 // idIsSet returns true when an optional+computed Int64 attribute was explicitly
 // provided by the user (i.e., neither null nor unknown).
 func idIsSet(v types.Int64) bool {
@@ -1240,8 +1245,9 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, []int, error) {
 
 	if setSlots != 0 && setSlots != totalSlots {
 		return nil, nil, fmt.Errorf(
-			"nested type IDs: either all must be specified or none; got %d of %d set",
-			setSlots, totalSlots,
+			"nested type IDs: either all must be specified or none; got %d of %d set\n\n"+
+				"To pin all nested type IDs in your configuration:\n\n%s",
+			setSlots, totalSlots, nestedIDsHint(fields),
 		)
 	}
 
@@ -1252,8 +1258,9 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, []int, error) {
 			valSet := idIsSet(f.MapType.ValueID)
 			if keySet != valSet {
 				return nil, nil, fmt.Errorf(
-					"field %q map_type: key_id and value_id must both be set or both omitted",
-					f.Name.ValueString(),
+					"field %q map_type: key_id and value_id must both be set or both omitted\n\n"+
+						"To pin all nested type IDs in your configuration:\n\n%s",
+					f.Name.ValueString(), nestedIDsHint(fields),
 				)
 			}
 		}
@@ -1269,7 +1276,13 @@ func resolveNestedIDs(fields []FieldModel) ([]FieldModel, []int, error) {
 		// complement of the nested-ID set within [1, N+K].
 		nestedIDSet := collectNestedIDs(fields)
 		fieldIDs := complementFieldIDs(len(fields), totalSlots, nestedIDSet)
-		return fields, fieldIDs, validateNestedIDUniqueness(fields, fieldIDs)
+		if err := validateNestedIDUniqueness(fields, fieldIDs); err != nil {
+			return nil, nil, fmt.Errorf(
+				"%w\n\nTo pin all nested type IDs in your configuration:\n\n%s",
+				err, nestedIDsHint(fields),
+			)
+		}
+		return fields, fieldIDs, nil
 	}
 
 	// Auto-assign: top-level field IDs are 1..N; nested IDs start from N+1.
@@ -1353,6 +1366,102 @@ func complementFieldIDs(n, k int, nestedIDSet map[int64]struct{}) []int {
 		}
 	}
 	return result
+}
+
+// clearNestedIDs returns a deep copy of fields with all nested type IDs set to null.
+func clearNestedIDs(fields []FieldModel) []FieldModel {
+	result := make([]FieldModel, len(fields))
+	copy(result, fields)
+	for i := range result {
+		f := &result[i]
+		if f.ListType != nil {
+			lt := *f.ListType
+			lt.ID = types.Int64Null()
+			f.ListType = &lt
+		}
+		if f.MapType != nil {
+			mt := *f.MapType
+			mt.KeyID = types.Int64Null()
+			mt.ValueID = types.Int64Null()
+			f.MapType = &mt
+		}
+		if f.StructType != nil {
+			st := *f.StructType
+			newSFs := make([]StructSubFieldModel, len(st.Fields))
+			copy(newSFs, st.Fields)
+			for j := range newSFs {
+				newSFs[j].ID = types.Int64Null()
+			}
+			st.Fields = newSFs
+			f.StructType = &st
+		}
+	}
+	return result
+}
+
+// nestedIDsHCL formats the nested-type ID attributes of fields as HCL field blocks.
+// Only fields that have a nested type (list_type, map_type, struct_type) are included,
+// and only the ID-bearing attributes are shown. The output can be pasted into a
+// Terraform resource block to pin all nested type IDs explicitly.
+func nestedIDsHCL(fields []FieldModel) string {
+	var b strings.Builder
+	for _, f := range fields {
+		if f.ListType == nil && f.MapType == nil && f.StructType == nil {
+			continue
+		}
+		fmt.Fprintf(&b, "  field {\n    name = %q\n", f.Name.ValueString())
+		if f.ListType != nil && idIsSet(f.ListType.ID) {
+			fmt.Fprintf(&b, "    list_type {\n      id = %d\n    }\n", f.ListType.ID.ValueInt64())
+		}
+		if f.MapType != nil && idIsSet(f.MapType.KeyID) {
+			fmt.Fprintf(&b, "    map_type {\n      key_id   = %d\n      value_id = %d\n    }\n",
+				f.MapType.KeyID.ValueInt64(), f.MapType.ValueID.ValueInt64())
+		}
+		if f.StructType != nil {
+			fmt.Fprintf(&b, "    struct_type {\n")
+			for _, sf := range f.StructType.Fields {
+				if idIsSet(sf.ID) {
+					fmt.Fprintf(&b, "      field {\n        id   = %d\n        name = %q\n      }\n",
+						sf.ID.ValueInt64(), sf.Name.ValueString())
+				}
+			}
+			fmt.Fprintf(&b, "    }\n")
+		}
+		fmt.Fprintf(&b, "  }\n")
+	}
+	return b.String()
+}
+
+// nestedIDsHint computes auto-assigned nested type IDs for fields and returns
+// a formatted HCL snippet showing the id attributes for all nested-type fields.
+// Used to guide the user toward a valid explicit ID assignment.
+func nestedIDsHint(fields []FieldModel) string {
+	resolved, _, _ := resolveNestedIDs(clearNestedIDs(fields))
+	return nestedIDsHCL(resolved)
+}
+
+// nestedIDsAutoAssignHint returns the HCL hint when any nested type ID was
+// auto-assigned (null/unknown in original, concrete in resolved). Returns empty
+// string when no IDs were auto-assigned (all were already explicit or there are
+// no nested types).
+func nestedIDsAutoAssignHint(original, resolved []FieldModel) string {
+	for i, f := range original {
+		r := resolved[i]
+		if f.ListType != nil && !idIsSet(f.ListType.ID) && r.ListType != nil && idIsSet(r.ListType.ID) {
+			return nestedIDsHCL(resolved)
+		}
+		if f.MapType != nil && !idIsSet(f.MapType.KeyID) && r.MapType != nil && idIsSet(r.MapType.KeyID) {
+			return nestedIDsHCL(resolved)
+		}
+		if f.StructType != nil && r.StructType != nil {
+			for j, sf := range f.StructType.Fields {
+				if !idIsSet(sf.ID) && idIsSet(r.StructType.Fields[j].ID) {
+					return nestedIDsHCL(resolved)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // validateNestedIDUniqueness checks that all explicitly set nested type IDs
@@ -1744,11 +1853,11 @@ func icebergToFieldModel(f *iceberg.NestedField) (FieldModel, error) {
 		}
 	case *iceberg.MapType:
 		model.MapType = &MapTypeModel{
-			KeyID:    types.Int64Value(int64(t.KeyID)),
-			ValueID:  types.Int64Value(int64(t.ValueID)),
-			KeyType:  types.StringValue(t.KeyType.String()),
+			KeyID:     types.Int64Value(int64(t.KeyID)),
+			ValueID:   types.Int64Value(int64(t.ValueID)),
+			KeyType:   types.StringValue(t.KeyType.String()),
 			ValueType: types.StringValue(t.ValueType.String()),
-			Required: types.BoolValue(t.ValueRequired),
+			Required:  types.BoolValue(t.ValueRequired),
 		}
 	case *iceberg.StructType:
 		subFields := make([]StructSubFieldModel, 0, len(t.FieldList))

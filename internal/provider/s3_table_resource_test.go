@@ -21,9 +21,9 @@ import (
 	iceio "github.com/apache/iceberg-go/io"
 	itable "github.com/apache/iceberg-go/table"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	fwpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -454,8 +454,8 @@ func TestPropertiesToPropertyModels(t *testing.T) {
 	// prop in their property block (userDeclaredProps contains it), it appears in state.
 	t.Run("user_declared_auto_ignored_included", func(t *testing.T) {
 		props := iceberg.Properties{
-			"write_compression":               "snappy",
-			"schema.name-mapping.default":     `[{"field-id":1}]`,
+			"write_compression":                "snappy",
+			"schema.name-mapping.default":      `[{"field-id":1}]`,
 			"write.metadata.compression-codec": "gzip",
 		}
 		userDeclared := map[string]struct{}{
@@ -1021,9 +1021,9 @@ func TestPartitionsMatch(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		want []PartitionModel
-		got  []PartitionModel
+		name  string
+		want  []PartitionModel
+		got   []PartitionModel
 		match bool
 	}{
 		{
@@ -1168,7 +1168,7 @@ type mockCatalog struct {
 func (m *mockCatalog) LoadTable(ctx context.Context, id itable.Identifier) (*itable.Table, error) {
 	return m.loadTableFn(ctx, id)
 }
-func (m *mockCatalog) CatalogType() catalog.Type                { panic("not implemented") }
+func (m *mockCatalog) CatalogType() catalog.Type { panic("not implemented") }
 func (m *mockCatalog) CreateTable(
 	_ context.Context, _ itable.Identifier, _ *iceberg.Schema, _ ...catalog.CreateTableOpt,
 ) (*itable.Table, error) {
@@ -1371,9 +1371,9 @@ func TestRefreshUntilConsistent(t *testing.T) {
 		}
 		if calls != refreshMaxRetries+1 {
 			t.Errorf(
-					"LoadTable called %d times, want %d (1 initial + %d retries)",
-					calls, refreshMaxRetries+1, refreshMaxRetries,
-				)
+				"LoadTable called %d times, want %d (1 initial + %d retries)",
+				calls, refreshMaxRetries+1, refreshMaxRetries,
+			)
 		}
 	})
 
@@ -1553,8 +1553,8 @@ func TestBuildSchema_NestedTypes(t *testing.T) {
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
+				},
 			},
 		}
 		s, err := BuildSchema(fields)
@@ -1651,8 +1651,8 @@ func TestBuildSchema_NestedTypes(t *testing.T) {
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
+				},
 			},
 		}
 		s, err := BuildSchema(fields)
@@ -1697,16 +1697,16 @@ func TestBuildSchema_NestedTypes(t *testing.T) {
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Value(10), ElementType: types.StringValue("int"), Required: types.BoolValue(false),
+				},
 			},
 			{
 				Name: types.StringValue("b"), Required: types.BoolValue(false), Doc: types.StringValue(""),
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
+				},
 			},
 		}
 		_, err := BuildSchema(fields)
@@ -1727,8 +1727,8 @@ func TestBuildSchema_NestedTypes(t *testing.T) {
 				Type: types.StringNull(), DefaultString: types.StringNull(),
 				DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 				ListType: &ListTypeModel{
-						ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
-					},
+					ID: types.Int64Null(), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
+				},
 			},
 		}
 		s, err := BuildSchema(fields)
@@ -1947,6 +1947,13 @@ func TestResolveNestedIDs(t *testing.T) {
 		_, _, err := resolveNestedIDs(fields)
 		if err == nil {
 			t.Fatal("expected error for partial ID specification")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "list_type") {
+			t.Errorf("error message missing list_type hint, got:\n%s", msg)
+		}
+		if !strings.Contains(msg, `name = "a"`) {
+			t.Errorf("error message missing field name hint, got:\n%s", msg)
 		}
 	})
 
@@ -2207,8 +2214,8 @@ func TestNestedTypeUpdateErrMsg(t *testing.T) {
 			Required: types.BoolValue(false), Doc: types.StringValue(""),
 			DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
 			ListType: &ListTypeModel{
-					ID: types.Int64Value(11), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
-				},
+				ID: types.Int64Value(11), ElementType: types.StringValue("string"), Required: types.BoolValue(false),
+			},
 		},
 		{
 			Name: types.StringValue("counts"), Type: types.StringNull(),
