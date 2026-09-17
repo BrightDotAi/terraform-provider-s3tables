@@ -1957,6 +1957,38 @@ func TestResolveNestedIDs(t *testing.T) {
 		}
 	})
 
+	t.Run("partial_ids_hint_preserves_pinned_ids", func(t *testing.T) {
+		// Field "a" has list ID=10 pinned; field "b" has list ID unset.
+		// Hint must keep id=10 for "a" and fill a fresh non-conflicting value for "b".
+		fields := []FieldModel{
+			{
+				Name: types.StringValue("a"), Type: types.StringNull(),
+				Required: types.BoolValue(false), Doc: types.StringValue(""),
+				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: makeList(types.Int64Value(10)), // pinned
+			},
+			{
+				Name: types.StringValue("b"), Type: types.StringNull(),
+				Required: types.BoolValue(false), Doc: types.StringValue(""),
+				DefaultString: types.StringNull(), DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(),
+				ListType: makeList(types.Int64Null()), // missing
+			},
+		}
+		_, _, err := resolveNestedIDs(fields)
+		if err == nil {
+			t.Fatal("expected partial IDs error")
+		}
+		msg := err.Error()
+		// Pinned id=10 must appear in hint unchanged.
+		if !strings.Contains(msg, "id = 10") {
+			t.Errorf("hint dropped pinned id=10, got:\n%s", msg)
+		}
+		// Suggested id for "b" must not be 10 (collision) and must not be 1 or 2 (field IDs).
+		if strings.Contains(msg, "id = 1\n") || strings.Contains(msg, "id = 2\n") {
+			t.Errorf("hint suggested field-ID-range value for missing nested ID, got:\n%s", msg)
+		}
+	})
+
 	t.Run("list_nested_id_avoids_field_id_collision", func(t *testing.T) {
 		// list ElementID=1 explicitly set; 1 field → field ID is complement of {1} in [1,2] = [2].
 		fields := []FieldModel{

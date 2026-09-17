@@ -1368,21 +1368,65 @@ func complementFieldIDs(n, k int, nestedIDSet map[int64]struct{}) []int {
 	return result
 }
 
-// clearNestedIDs returns a deep copy of fields with all nested type IDs set to null.
-func clearNestedIDs(fields []FieldModel) []FieldModel {
+// fillMissingNestedIDs returns a copy of fields where every unset nested type ID
+// has been filled with a fresh value. Already-pinned IDs are preserved exactly.
+// Fresh IDs are chosen by scanning from 1 upward and skipping both the field-ID
+// range (1..N) and any already-pinned nested IDs, so the suggested values never
+// collide with existing pins or with the complement-based field IDs.
+func fillMissingNestedIDs(fields []FieldModel) []FieldModel {
+	// Build the reserved set: field IDs (1..N) + all already-pinned nested IDs.
+	reserved := make(map[int64]struct{}, len(fields))
+	for i := range fields {
+		reserved[int64(i+1)] = struct{}{}
+	}
+	for _, f := range fields {
+		if f.ListType != nil && idIsSet(f.ListType.ID) {
+			reserved[f.ListType.ID.ValueInt64()] = struct{}{}
+		}
+		if f.MapType != nil {
+			if idIsSet(f.MapType.KeyID) {
+				reserved[f.MapType.KeyID.ValueInt64()] = struct{}{}
+			}
+			if idIsSet(f.MapType.ValueID) {
+				reserved[f.MapType.ValueID.ValueInt64()] = struct{}{}
+			}
+		}
+		if f.StructType != nil {
+			for _, sf := range f.StructType.Fields {
+				if idIsSet(sf.ID) {
+					reserved[sf.ID.ValueInt64()] = struct{}{}
+				}
+			}
+		}
+	}
+
+	next := int64(1)
+	nextID := func() int64 {
+		for {
+			if _, taken := reserved[next]; !taken {
+				break
+			}
+			next++
+		}
+		id := next
+		reserved[id] = struct{}{}
+		next++
+		return id
+	}
+
 	result := make([]FieldModel, len(fields))
 	copy(result, fields)
 	for i := range result {
 		f := &result[i]
-		if f.ListType != nil {
+		if f.ListType != nil && !idIsSet(f.ListType.ID) {
 			lt := *f.ListType
-			lt.ID = types.Int64Null()
+			lt.ID = types.Int64Value(nextID())
 			f.ListType = &lt
 		}
-		if f.MapType != nil {
+		if f.MapType != nil && !idIsSet(f.MapType.KeyID) {
 			mt := *f.MapType
-			mt.KeyID = types.Int64Null()
-			mt.ValueID = types.Int64Null()
+			mt.KeyID = types.Int64Value(nextID())
+			mt.ValueID = types.Int64Value(nextID())
 			f.MapType = &mt
 		}
 		if f.StructType != nil {
@@ -1390,7 +1434,9 @@ func clearNestedIDs(fields []FieldModel) []FieldModel {
 			newSFs := make([]StructSubFieldModel, len(st.Fields))
 			copy(newSFs, st.Fields)
 			for j := range newSFs {
-				newSFs[j].ID = types.Int64Null()
+				if !idIsSet(newSFs[j].ID) {
+					newSFs[j].ID = types.Int64Value(nextID())
+				}
 			}
 			st.Fields = newSFs
 			f.StructType = &st
@@ -1432,12 +1478,11 @@ func nestedIDsHCL(fields []FieldModel) string {
 	return b.String()
 }
 
-// nestedIDsHint computes auto-assigned nested type IDs for fields and returns
-// a formatted HCL snippet showing the id attributes for all nested-type fields.
-// Used to guide the user toward a valid explicit ID assignment.
+// nestedIDsHint fills any missing nested type IDs while preserving all already-pinned
+// ones, then formats the result as HCL. Used to guide the user toward a valid complete
+// ID assignment without clobbering IDs they have already pinned.
 func nestedIDsHint(fields []FieldModel) string {
-	resolved, _, _ := resolveNestedIDs(clearNestedIDs(fields))
-	return nestedIDsHCL(resolved)
+	return nestedIDsHCL(fillMissingNestedIDs(fields))
 }
 
 // nestedIDsAutoAssignHint returns the HCL hint when any nested type ID was
