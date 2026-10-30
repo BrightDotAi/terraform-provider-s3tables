@@ -551,12 +551,27 @@ type addFieldArgs struct {
 	name       string
 }
 
+type moveArgs struct {
+	path       []string
+	relativeTo []string // nil for MoveFirst
+}
+
 type mockSchemaUpdater struct {
 	deletedCols  [][]string
 	addedCols    []addColumnArgs
 	updatedCols  []updateColumnArgs
+	moves        []moveArgs
 	commitCalled bool
 	commitErr    error
+}
+
+func (m *mockSchemaUpdater) MoveFirst(path []string) *itable.UpdateSchema {
+	m.moves = append(m.moves, moveArgs{path: path})
+	return nil
+}
+func (m *mockSchemaUpdater) MoveAfter(path, relativeTo []string) *itable.UpdateSchema {
+	m.moves = append(m.moves, moveArgs{path: path, relativeTo: relativeTo})
+	return nil
 }
 
 func (m *mockSchemaUpdater) DeleteColumn(path []string) *itable.UpdateSchema {
@@ -665,12 +680,12 @@ func TestApplySchemaChanges(t *testing.T) {
 	t.Run("update_column", func(t *testing.T) {
 		state := FieldModel{
 			Name: types.StringValue("id"), Type: types.StringValue("long"),
-			Required: types.BoolValue(false), DefaultString: types.StringNull(),
+			Required: types.BoolValue(true), DefaultString: types.StringNull(),
 			DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), Doc: types.StringValue(""),
 		}
 		plan := FieldModel{
 			Name: types.StringValue("id"), Type: types.StringValue("long"),
-			Required: types.BoolValue(true), DefaultString: types.StringNull(),
+			Required: types.BoolValue(false), DefaultString: types.StringNull(),
 			DefaultNumber: types.NumberNull(), DefaultBool: types.BoolNull(), Doc: types.StringValue("pk"),
 		}
 		mock := &mockSchemaUpdater{}
