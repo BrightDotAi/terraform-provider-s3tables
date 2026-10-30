@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -587,19 +589,28 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 
+	// Diff against the table as loaded just now rather than against state. The
+	// commit below asserts the table's current schema and partition spec IDs, so
+	// the catalog rejects it if the table changes between this load and the commit.
+	var live S3TableResourceModel
+	if err := setModelFromTable(&live, tbl); err != nil {
+		resp.Diagnostics.AddError("Error reading Iceberg fields", err.Error())
+		return
+	}
+
 	txn := tbl.NewTransaction()
 
-	err = ApplySchemaChanges(&txnAdapter{txn}, state.Fields, plan.Fields)
+	err = ApplySchemaChanges(&txnAdapter{txn}, live.Fields, plan.Fields)
 	if err != nil {
 		if isNonPrimitiveUpdateErr(err) {
-			resp.Diagnostics.AddError("Error updating schema", nestedTypeUpdateErrMsg(err, state.Fields))
+			resp.Diagnostics.AddError("Error updating schema", nestedTypeUpdateErrMsg(err, live.Fields))
 		} else {
 			resp.Diagnostics.AddError("Error updating schema", err.Error())
 		}
 		return
 	}
 
-	err = ApplyPartitionChanges(&txnAdapter{txn}, state.Partitions, plan.Partitions)
+	err = ApplyPartitionChanges(&txnAdapter{txn}, live.Partitions, plan.Partitions)
 	if err != nil {
 		resp.Diagnostics.AddError("Error updating partition spec", err.Error())
 		return
@@ -613,12 +624,12 @@ func (r *S3TableResource) Update(ctx context.Context, req resource.UpdateRequest
 
 	// Log what the transaction is about to change so a DEBUG log shows whether
 	// the commit below is a no-op.
-	added, removed, updated := schemaChangeSummary(state.Fields, plan.Fields)
+	added, removed, updated := schemaChangeSummary(live.Fields, plan.Fields)
 	tflog.Debug(ctx, "staged table update", map[string]any{
 		"fields_added":     added,
 		"fields_removed":   removed,
 		"fields_updated":   updated,
-		"state_partitions": partitionSummary(state.Partitions),
+		"state_partitions": partitionSummary(live.Partitions),
 		"plan_partitions":  partitionSummary(plan.Partitions),
 	})
 
@@ -749,6 +760,7 @@ func refreshUntilConsistent(
 		var model S3TableResourceModel
 		model.IgnoreProperties = plan.IgnoreProperties
 		model.Properties = plan.Properties // seed so setModelFromTable preserves user-declared system-managed props
+		model.Partitions = plan.Partitions // seed so setModelFromTable keeps the configured partition order
 		if err := setModelFromTable(&model, tbl); err != nil {
 			tflog.Debug(ctx, "converting loaded table after commit failed", map[string]any{
 				"attempt": attempt + 1, "error": err.Error(),
@@ -771,17 +783,9 @@ func refreshUntilConsistent(
 // fieldsEqual reports whether two field lists are identical in order and content.
 // Unlike reflect.DeepEqual on the slices it treats a nil slice (a plan with no
 // field blocks decodes to nil) and an empty slice (loaded from the catalog via
-// make) as equal.
+// make) as equal, and it compares numeric defaults by value (see fieldModelsEqual).
 func fieldsEqual(a, b []FieldModel) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !reflect.DeepEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
+	return slices.EqualFunc(a, b, fieldModelsEqual)
 }
 
 // schemaChangeSummary lists the field names ApplySchemaChanges would add, remove,
@@ -964,6 +968,36 @@ func (r *S3TableResource) ValidateConfig(
 			)
 		}
 	}
+	seenFields := make(map[string]struct{}, len(data.Fields))
+	for i, f := range data.Fields {
+		if f.Name.IsUnknown() {
+			continue
+		}
+		name := f.Name.ValueString()
+		if _, dup := seenFields[name]; dup {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("field").AtListIndex(i).AtName("name"),
+				"Duplicate field name",
+				fmt.Sprintf("field %q is declared more than once; column names must be unique.", name),
+			)
+		}
+		seenFields[name] = struct{}{}
+	}
+	seenPartitions := make(map[string]struct{}, len(data.Partitions))
+	for i, p := range data.Partitions {
+		if p.Name.IsUnknown() {
+			continue
+		}
+		name := p.Name.ValueString()
+		if _, dup := seenPartitions[name]; dup {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("partition").AtListIndex(i).AtName("name"),
+				"Duplicate partition name",
+				fmt.Sprintf("partition %q is declared more than once; partition field names must be unique.", name),
+			)
+		}
+		seenPartitions[name] = struct{}{}
+	}
 	if _, _, err := resolveNestedIDs(data.Fields); err != nil {
 		resp.Diagnostics.AddError("Invalid nested type IDs", err.Error())
 	}
@@ -1122,15 +1156,21 @@ func (data *S3TableResourceModel) GetIdentifier() itable.Identifier {
 }
 
 // fieldModelsEqual compares two FieldModels for semantic equality.
-// Uses reflect.DeepEqual for pointer fields (ListType, MapType, StructType).
+//
+// Values are compared with their Equal methods rather than ==, because
+// types.Number wraps a *big.Float: == compares the pointers, and reflect.DeepEqual
+// also compares the precision, which differs between a number decoded from
+// Terraform's wire format (64 bits) and one built from the catalog's float64
+// (53 bits). Both would report equal numbers as different.
+// The nested type models hold no numbers, so reflect.DeepEqual is sufficient there.
 func fieldModelsEqual(a, b FieldModel) bool {
-	return a.Name == b.Name &&
-		a.Type == b.Type &&
-		a.Required == b.Required &&
-		a.DefaultString == b.DefaultString &&
-		a.DefaultNumber == b.DefaultNumber &&
-		a.DefaultBool == b.DefaultBool &&
-		a.Doc == b.Doc &&
+	return a.Name.Equal(b.Name) &&
+		a.Type.Equal(b.Type) &&
+		a.Required.Equal(b.Required) &&
+		a.DefaultString.Equal(b.DefaultString) &&
+		a.DefaultNumber.Equal(b.DefaultNumber) &&
+		a.DefaultBool.Equal(b.DefaultBool) &&
+		a.Doc.Equal(b.Doc) &&
 		reflect.DeepEqual(a.ListType, b.ListType) &&
 		reflect.DeepEqual(a.MapType, b.MapType) &&
 		reflect.DeepEqual(a.StructType, b.StructType)
@@ -1788,7 +1828,7 @@ func setModelFromTable(data *S3TableResourceModel, tbl *itable.Table) error {
 	if err != nil {
 		return err
 	}
-	data.Partitions = specToPartitionModels(tbl.Spec(), tbl.Schema())
+	data.Partitions = alignPartitionOrder(specToPartitionModels(tbl.Spec(), tbl.Schema()), data.Partitions)
 
 	// Carry forward auto-ignored props that were already in state (meaning the user
 	// declared them in a property block and wants them tracked).
@@ -2048,6 +2088,8 @@ type schemaUpdater interface {
 	) *itable.UpdateSchema
 	DeleteColumn(path []string) *itable.UpdateSchema
 	UpdateColumn(path []string, update itable.ColumnUpdate) *itable.UpdateSchema
+	MoveFirst(path []string) *itable.UpdateSchema
+	MoveAfter(path, relativeTo []string) *itable.UpdateSchema
 	Commit() error
 }
 
@@ -2073,146 +2115,6 @@ func (a *txnAdapter) UpdateSchema(caseSensitive, allowIncompatible bool) schemaU
 // UpdateSpec delegates to the underlying transaction, satisfying the tableTransaction interface.
 func (a *txnAdapter) UpdateSpec(caseSensitive bool) partitionUpdater {
 	return a.t.UpdateSpec(caseSensitive)
-}
-
-// ApplySchemaChanges computes the diff between state and plan fields and applies
-// add/delete/update operations to the transaction.
-func ApplySchemaChanges(txn tableTransaction, stateFields, planFields []FieldModel) error {
-
-	// Build a map of current Iceberg fields by name.
-	current := make(map[string]FieldModel)
-	for _, f := range stateFields {
-		current[f.Name.ValueString()] = f
-	}
-
-	// Build a map of plan fields by name.
-	plan := make(map[string]FieldModel)
-	for _, f := range planFields {
-		plan[f.Name.ValueString()] = f
-	}
-
-	// Detect any changes that require an UpdateSchema call.
-	hasChanges := false
-	for name, pf := range plan {
-		if cf, exists := current[name]; !exists || !fieldModelsEqual(cf, pf) {
-			hasChanges = true
-			break
-		}
-	}
-	if !hasChanges {
-		for name := range current {
-			if _, exists := plan[name]; !exists {
-				hasChanges = true
-				break
-			}
-		}
-	}
-	if !hasChanges {
-		return nil
-	}
-
-	updater := txn.UpdateSchema(true, false)
-
-	// Delete columns that are in current but not in plan.
-	for name := range current {
-		if _, exists := plan[name]; !exists {
-			updater.DeleteColumn([]string{name})
-		}
-	}
-
-	// Add columns that are in plan but not in current.
-	// Update columns for existing columns which have changed
-	for name, pf := range plan {
-		if cf, exists := current[name]; !exists || !fieldModelsEqual(cf, pf) {
-			typ, err := fieldModelToIcebergType(pf)
-			if err != nil {
-				return fmt.Errorf("field %q: %w", name, err)
-			}
-			dv, err := pf.getFieldDefault()
-			if err != nil {
-				return fmt.Errorf("field %q: %w", name, err)
-			}
-			var dvlit iceberg.Literal
-			if !pf.Type.IsNull() {
-				dvlit, err = anyToIcebergLit(pf.Type.ValueString(), dv)
-				if err != nil {
-					return fmt.Errorf("field %q: %w", name, err)
-				}
-			}
-			if !exists {
-				updater.AddColumn([]string{name}, typ, pf.Doc.ValueString(), pf.Required.ValueBool(), dvlit)
-			} else {
-				updater.UpdateColumn([]string{name}, itable.ColumnUpdate{
-					FieldType:    iceberg.Optional[iceberg.Type]{Valid: true, Val: typ},
-					Doc:          iceberg.Optional[string]{Valid: true, Val: pf.Doc.ValueString()},
-					Required:     iceberg.Optional[bool]{Valid: true, Val: pf.Required.ValueBool()},
-					WriteDefault: iceberg.Optional[iceberg.Literal]{Valid: true, Val: dvlit},
-				})
-			}
-		}
-	}
-
-	return updater.Commit()
-}
-
-// applyPartitionChanges computes the diff between the current spec and the plan
-// and applies add/remove operations to the transaction.
-func ApplyPartitionChanges(txn tableTransaction, statePartitions, planPartitions []PartitionModel) error {
-	// Build a map of current partition fields by name.
-	current := make(map[string]PartitionModel)
-	for _, p := range statePartitions {
-		current[p.Name.ValueString()] = p
-	}
-
-	// Build a set of plan partition field names.
-	plan := make(map[string]PartitionModel)
-	for _, p := range planPartitions {
-		plan[p.Name.ValueString()] = p
-	}
-
-	// check for changes
-	hasChanges := len(current) != len(plan)
-	if !hasChanges {
-		for name, pp := range plan {
-			if sp, exists := current[name]; !exists || pp != sp {
-				hasChanges = true
-				break
-			}
-		}
-	}
-	if !hasChanges {
-		for name := range current {
-			if _, exists := plan[name]; !exists {
-				hasChanges = true
-				break
-			}
-		}
-	}
-	if !hasChanges {
-		return nil
-	}
-
-	updater := txn.UpdateSpec(true)
-
-	// Remove partition fields that are in current but not in plan or that have changed.
-	for name, cp := range current {
-		if pp, exists := plan[name]; !exists || cp != pp {
-			updater.RemoveField(name)
-		}
-	}
-
-	// Add partition fields that are in plan but not in current, or that have changed.
-	for name, pp := range plan {
-		if cp, exists := current[name]; !exists || cp != pp {
-			transform, err := iceberg.ParseTransform(pp.Transform.ValueString())
-			if err != nil {
-				return fmt.Errorf("partition %q: %w", name, err)
-			}
-			updater.AddField(pp.SourceName.ValueString(), transform, name)
-		}
-	}
-
-	return updater.Commit()
 }
 
 // checkPropChanges returns an error when the plan properties differ from state.
@@ -2352,7 +2254,8 @@ func checkPropValueEqual(name, stateVal, planVal, planType string) error {
 // isNonPrimitiveUpdateErr returns true when the catalog has rejected an UpdateColumn
 // call because the column has a non-primitive (list, map, struct) type.
 func isNonPrimitiveUpdateErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "cannot update field type for non-primitive type")
+	return err != nil && (errors.Is(err, errNestedTypeUpdate) ||
+		strings.Contains(err.Error(), "cannot update field type for non-primitive type"))
 }
 
 // nestedTypeUpdateErrMsg builds a human-friendly error for the non-primitive update

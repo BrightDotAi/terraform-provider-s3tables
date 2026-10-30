@@ -64,7 +64,24 @@ The provider uses the standard AWS credential chain: environment variables (`AWS
 
 Manages an [Apache Iceberg](https://iceberg.apache.org/) table in an S3 Tables bucket via the AWS Glue catalog.
 
-Schema columns and partition fields can be added or removed without destroying and recreating the table. Renaming a column or changing its type requires removing the old column and adding a new one (in-place rename/retype is not supported by the Iceberg spec).
+Schema columns and partition fields can be added or removed without destroying and recreating the table. Columns are matched by name, so renaming a column removes the old column and adds a new one (its data is lost).
+
+On update the provider works out every change first and validates it before anything is sent to the catalog; a change Iceberg cannot express is reported with the column name and nothing is applied. All changes are committed together in one catalog commit, which the catalog rejects if the table was modified concurrently. What an existing column accepts:
+
+| Change | Supported |
+|--------|-----------|
+| `doc` | Yes |
+| `required` from `true` to `false` | Yes |
+| `required` from `false` to `true` | No (existing rows may contain nulls) |
+| Type promotion `int` to `long`, `float` to `double`, wider `decimal(P,S)` | Yes |
+| Any other primitive type change | No: remove the field and add it again |
+| Changing a `list_type`, `map_type` or `struct_type` definition | No |
+| Setting or changing a `default_*` value | Yes (requires `format_version` 3) |
+| Removing a `default_*` value | No |
+
+A new column with `required = true` must have a `default_*` value, because existing rows have no value for it.
+
+Columns are kept in the order of the `field` blocks: new columns are added in that order and existing columns are moved to match, which only changes table metadata. The order of `partition` blocks cannot be rearranged in an Iceberg table, so new partition fields are appended in configuration order; if the configuration lists the same partition fields in a different order than the table, the configured order is kept in state.
 
 > **Note:** Table properties cannot be updated after creation. To change properties, destroy and recreate the resource.
 
